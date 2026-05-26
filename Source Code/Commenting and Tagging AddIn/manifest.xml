@@ -5,18 +5,18 @@
   <ProviderName>Contoso</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="Commenting and Tagging AddIn"/>
-  <Description DefaultValue="A template to get started."/>
-  <IconUrl DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://localhost:3000/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://www.contoso.com/help"/>
+  <Description DefaultValue="Detects @mentions in Word Online comments and sends notifications"/>
+  <IconUrl DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In"/>
   <AppDomains>
-    <AppDomain>https://www.contoso.com</AppDomain>
+    <AppDomain>https://dhyey249.github.io</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Document"/>
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://localhost:3000/taskpane.html"/>
+    <SourceLocation DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
@@ -62,14 +62,14 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://localhost:3000/assets/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://localhost:3000/assets/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://localhost:3000/assets/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/assets/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/assets/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://go.microsoft.com/fwlink/?LinkId=276812"/>
-        <bt:Url id="Commands.Url" DefaultValue="https://localhost:3000/commands.html"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://localhost:3000/taskpane.html"/>
+        <bt:Url id="Commands.Url" DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/commands.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="https://dhyey249.github.io/MarcoCSG-Commenting-Word-Add-In/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="Get started with your sample add-in!"/>
