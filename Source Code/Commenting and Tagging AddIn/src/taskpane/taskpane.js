@@ -5,26 +5,41 @@
 
 /* global document, Office, Word */
 
-Office.onReady((info) => {
+Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
-    document.getElementById("sideload-msg").style.display = "none";
-    document.getElementById("app-body").style.display = "flex";
     document.getElementById("run").onclick = run;
   }
 });
 
-export async function run() {
-  return Word.run(async (context) => {
-    /**
-     * Insert your Word code here
-     */
+async function run() {
+  try {
+    await Word.run(async function (context) {
+      /* ── Insert 'Hello World!' at the end of the document ── */
+      /* body.insertParagraph is WordApi 1.1 — safe for OOS     */
+      var body = context.document.body;
+      var newParagraph = body.insertParagraph("Hello World!", Word.InsertLocation.end);
 
-    // insert a paragraph at the end of the document.
-    const paragraph = context.document.body.insertParagraph("Hello World", Word.InsertLocation.end);
+      /* ── Apply basic formatting (all WordApi 1.1) ── */
+      newParagraph.font.bold = true;
+      newParagraph.font.color = "#1F3864";
+      newParagraph.font.size = 14;
 
-    // change the paragraph color to blue.
-    paragraph.font.color = "blue";
+      /* ── Flush all queued commands to the document ── */
+      await context.sync();
 
-    await context.sync();
-  });
+      /* ── Confirm success in the taskpane ── */
+      showMessage("Hello World inserted successfully!", "success");
+    });
+  } catch (error) {
+    showMessage("Error: " + error.message, "error");
+    console.error(error);
+  }
+}
+
+function showMessage(text, type) {
+  var el = document.getElementById("message");
+  if (el) {
+    el.textContent = text;
+    el.style.color = type === "error" ? "#9C0006" : "#375623";
+  }
 }
