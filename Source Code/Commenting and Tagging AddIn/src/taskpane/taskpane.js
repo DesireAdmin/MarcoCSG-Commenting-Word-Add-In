@@ -13,9 +13,9 @@ Office.onReady(function (info) {
 
 function run() {
   // Add these debug lines temporarily
-  console.log("Office.js loaded:", typeof Office !== "undefined");
-  console.log("Word supported:", Office.context.requirements.isSetSupported("WordApi", "1.1"));
-  console.log("Word 1.3 supported:", Office.context.requirements.isSetSupported("WordApi", "1.3"));
+  console.log("Office.js loaded::", typeof Office !== "undefined");
+  console.log("Word supported::", Office.context.requirements.isSetSupported("WordApi", "1.1"));
+  console.log("Word 1.3 supported::", Office.context.requirements.isSetSupported("WordApi", "1.3"));
 
   Word.run(function (context) {
     // CHECKPOINT 1 — can we even access document body?
