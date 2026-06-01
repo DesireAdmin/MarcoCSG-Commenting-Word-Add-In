@@ -4,7 +4,6 @@
  */
 
 /* global document, Office, Word */
-console.log("VERSION-2026-06-01");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
@@ -13,24 +12,21 @@ Office.onReady(function (info) {
 });
 
 async function run() {
-  try {
-    // Add these debug lines temporarily
-    console.log("Office.js loaded:", typeof Office !== "undefined");
-    console.log("Word supported:", Office.context.requirements.isSetSupported("WordApi", "1.1"));
-    console.log(
-      "Word 1.3 supported:",
-      Office.context.requirements.isSetSupported("WordApi", "1.3")
-    );
+  // Add these debug lines temporarily
+  console.log("Office.js loaded:", typeof Office !== "undefined");
+  console.log("Word supported:", Office.context.requirements.isSetSupported("WordApi", "1.1"));
+  console.log("Word 1.3 supported:", Office.context.requirements.isSetSupported("WordApi", "1.3"));
 
+  try {
     await Word.run(async function (context) {
       /* ── Insert 'Hello World!' at the end of the document ── */
       /* body.insertParagraph is WordApi 1.1 — safe for OOS     */
       var body = context.document.body;
-      var newParagraph = body.insertParagraph("Hello World!", Word.InsertLocation.end);
+      var newParagraph = body.insertParagraph("Hello World!", "End");
 
       /* ── Apply basic formatting (all WordApi 1.1) ── */
       newParagraph.font.bold = true;
-      newParagraph.font.color = "#bdf327";
+      newParagraph.font.color = "#cf8e15";
       newParagraph.font.size = 14;
 
       /* ── Flush all queued commands to the document ── */
@@ -41,7 +37,10 @@ async function run() {
     });
   } catch (error) {
     showMessage("Error: " + error.message, "error");
-    console.error(error);
+    console.error("Full error object:", error);
+    // Log the error code specifically — this tells us exactly which API failed
+    console.error("Error code:", error.code);
+    console.error("Error debug info:", error.debugInfo);
   }
 }
 
