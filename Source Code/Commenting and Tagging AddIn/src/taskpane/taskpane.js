@@ -4,6 +4,7 @@
  */
 
 /* global document, Office, Word */
+console.log("VERSION-2026-06-01");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
@@ -13,6 +14,14 @@ Office.onReady(function (info) {
 
 async function run() {
   try {
+    // Add these debug lines temporarily
+    console.log("Office.js loaded:", typeof Office !== "undefined");
+    console.log("Word supported:", Office.context.requirements.isSetSupported("WordApi", "1.1"));
+    console.log(
+      "Word 1.3 supported:",
+      Office.context.requirements.isSetSupported("WordApi", "1.3")
+    );
+
     await Word.run(async function (context) {
       /* ── Insert 'Hello World!' at the end of the document ── */
       /* body.insertParagraph is WordApi 1.1 — safe for OOS     */
@@ -21,7 +30,7 @@ async function run() {
 
       /* ── Apply basic formatting (all WordApi 1.1) ── */
       newParagraph.font.bold = true;
-      newParagraph.font.color = "#1F3864";
+      newParagraph.font.color = "#bdf327";
       newParagraph.font.size = 14;
 
       /* ── Flush all queued commands to the document ── */

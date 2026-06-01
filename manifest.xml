@@ -12,15 +12,14 @@
   <AppDomains>
     <AppDomain>https://desireadmin.github.io</AppDomain>
   </AppDomains>
-  <Hosts>
-    <Host Name="Document"/>
-  </Hosts>
   <Requirements>
     <Sets DefaultMinVersion="1.1">
         <Set Name="WordApi" MinVersion="1.1" />
     </Sets>
 </Requirements>
-
+  <Hosts>
+    <Host Name="Document"/>
+  </Hosts>
   <DefaultSettings>
     <SourceLocation DefaultValue="https://desireadmin.github.io/MarcoCSG-Commenting-Word-Add-In/taskpane.html"/>
   </DefaultSettings>
