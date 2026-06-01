@@ -18,31 +18,22 @@ function run() {
   console.log("Word 1.3 supported:", Office.context.requirements.isSetSupported("WordApi", "1.3"));
 
   Word.run(function (context) {
+    // CHECKPOINT 1 — can we even access document body?
     var body = context.document.body;
+    context.load(body, "text");
 
-    // Step 1: Insert the paragraph — don't use the return value
-    body.insertParagraph("Hello World!", "End");
+    return context
+      .sync()
+      .then(function () {
+        console.log("CHECKPOINT 1 PASSED — body.text:", body.text);
 
-    // Step 2: Sync the insertion first
-    return context.sync().then(function () {
-      // Step 3: Now fetch the last paragraph separately
-      var paragraphs = body.paragraphs;
-      context.load(paragraphs, "items");
-
-      return context.sync().then(function () {
-        // Step 4: Get the last paragraph and format it
-        var lastParagraph = paragraphs.items[paragraphs.items.length - 1];
-        context.load(lastParagraph, "font");
-
-        lastParagraph.font.bold = true;
-        lastParagraph.font.color = "#50cf15";
-        lastParagraph.font.size = 14;
-
-        return context.sync().then(function () {
-          showMessage("Hello World inserted successfully!", "success");
-        });
+        // CHECKPOINT 2 — can we insert anything?
+        body.insertText("TEST", "End");
+        return context.sync();
+      })
+      .then(function () {
+        console.log("CHECKPOINT 2 PASSED — insertText worked");
       });
-    });
   }).catch(function (error) {
     showMessage("Error: " + error.message, "error");
     console.error("Full error object:", error);
