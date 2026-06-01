@@ -1,9 +1,9 @@
-/*
- * Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
- * See LICENSE in the project root for license information.
- */
+// NO imports at the top — Office and Word are globals injected by office.js
+// DELETE any lines like:
+// import * as OfficeHelpers from "@microsoft/office-js-helpers";
+// import "office-ui-fabric-js/dist/js/fabric.js";
 
-/* global document, Office, Word */
+console.log("DEPLOYED VERSION: 2026-06-01-v4");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
@@ -12,34 +12,25 @@ Office.onReady(function (info) {
 });
 
 function run() {
-  // Add these debug lines temporarily
-  console.log("Office.js loaded::", typeof Office !== "undefined");
-  console.log("Word supported::", Office.context.requirements.isSetSupported("WordApi", "1.1"));
-  console.log("Word 1.3 supported::", Office.context.requirements.isSetSupported("WordApi", "1.3"));
-
   Word.run(function (context) {
-    // CHECKPOINT 1 — can we even access document body?
     var body = context.document.body;
     context.load(body, "text");
 
     return context
       .sync()
       .then(function () {
-        console.log("CHECKPOINT 1 PASSED — body.text:", body.text);
-
-        // CHECKPOINT 2 — can we insert anything?
-        body.insertText("TEST", "End");
+        console.log("CHECKPOINT 1 PASSED body.text length:", body.text.length);
+        body.insertText(" Hello World!", "End");
         return context.sync();
       })
       .then(function () {
-        console.log("CHECKPOINT 2 PASSED — insertText worked");
+        console.log("CHECKPOINT 2 PASSED insert worked");
+        showMessage("Hello World inserted!", "success");
       });
   }).catch(function (error) {
+    console.error("FAILED:", error.code, error.message);
+    console.error("debugInfo:", JSON.stringify(error.debugInfo, null, 2));
     showMessage("Error: " + error.message, "error");
-    console.error("Full error object:", error);
-    // Log the error code specifically — this tells us exactly which API failed
-    console.error("Error code:", error.code);
-    console.error("Error debug info:", error.debugInfo);
   });
 }
 
