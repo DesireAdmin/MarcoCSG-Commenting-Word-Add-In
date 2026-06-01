@@ -18,23 +18,31 @@ function run() {
   console.log("Word 1.3 supported:", Office.context.requirements.isSetSupported("WordApi", "1.3"));
 
   Word.run(function (context) {
-    /* ── Insert 'Hello World!' at the end of the document ── */
-    /* body.insertParagraph is WordApi 1.1 — safe for OOS     */
     var body = context.document.body;
-    var newParagraph = body.insertParagraph("Hello World!", "End");
 
-    /* ── Apply basic formatting (all WordApi 1.1) ── */
-    newParagraph.font.bold = true;
-    newParagraph.font.color = "#cf152e";
-    newParagraph.font.size = 14;
+    // Step 1: Insert the paragraph — don't use the return value
+    body.insertParagraph("Hello World!", "End");
 
-    /* ── Flush all queued commands to the document ── */
+    // Step 2: Sync the insertion first
     return context.sync().then(function () {
-      showMessage("Hello World inserted successfully!", "success");
-    });
+      // Step 3: Now fetch the last paragraph separately
+      var paragraphs = body.paragraphs;
+      context.load(paragraphs, "items");
 
-    /* ── Confirm success in the taskpane ── */
-    showMessage("Hello World inserted successfully!", "success");
+      return context.sync().then(function () {
+        // Step 4: Get the last paragraph and format it
+        var lastParagraph = paragraphs.items[paragraphs.items.length - 1];
+        context.load(lastParagraph, "font");
+
+        lastParagraph.font.bold = true;
+        lastParagraph.font.color = "#50cf15";
+        lastParagraph.font.size = 14;
+
+        return context.sync().then(function () {
+          showMessage("Hello World inserted successfully!", "success");
+        });
+      });
+    });
   }).catch(function (error) {
     showMessage("Error: " + error.message, "error");
     console.error("Full error object:", error);
