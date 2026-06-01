@@ -1,2 +1,52 @@
-!function(){var e={58394:function(e,t,o){"use strict";e.exports=o.p+"8d768f65702f2137206f.css"}},t={};function o(r){var n=t[r];if(void 0!==n)return n.exports;var c=t[r]={exports:{}};return e[r](c,c.exports,o),c.exports}o.m=e,o.g=function(){if("object"==typeof globalThis)return globalThis;try{return this||new Function("return this")()}catch(e){if("object"==typeof window)return window}}(),o.o=function(e,t){return Object.prototype.hasOwnProperty.call(e,t)},function(){var e;o.g.importScripts&&(e=o.g.location+"");var t=o.g.document;if(!e&&t&&(t.currentScript&&"SCRIPT"===t.currentScript.tagName.toUpperCase()&&(e=t.currentScript.src),!e)){var r=t.getElementsByTagName("script");if(r.length)for(var n=r.length-1;n>-1&&(!e||!/^http(s?):/.test(e));)e=r[n--].src}if(!e)throw new Error("Automatic publicPath is not supported in this browser");e=e.replace(/^blob:/,"").replace(/#.*$/,"").replace(/\?.*$/,"").replace(/\/[^\/]+$/,"/"),o.p=e}(),o.b="undefined"!=typeof document&&document.baseURI||self.location.href,function(){function e(){console.log("Office.js loaded:","undefined"!=typeof Office),console.log("Word supported:",Office.context.requirements.isSetSupported("WordApi","1.1")),console.log("Word 1.3 supported:",Office.context.requirements.isSetSupported("WordApi","1.3")),Word.run(function(e){var t=e.document.body;return e.load(t,"text"),e.sync().then(function(){return console.log("CHECKPOINT 1 PASSED — body.text:",t.text),t.insertText("TEST","End"),e.sync()}).then(function(){console.log("CHECKPOINT 2 PASSED — insertText worked")})}).catch(function(e){var t,o;t="Error: "+e.message,(o=document.getElementById("message"))&&(o.textContent=t,o.style.color="#9C0006"),console.error("Full error object:",e),console.error("Error code:",e.code),console.error("Error debug info:",e.debugInfo)})}Office.onReady(function(t){t.host===Office.HostType.Word&&(document.getElementById("run").onclick=e)})}(),function(){"use strict";new URL(o(58394),o.b)}()}();
-//# sourceMappingURL=taskpane.js.map
+/*
+ * Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT license.
+ * See LICENSE in the project root for license information.
+ */
+
+/* global document, Office, Word */
+
+Office.onReady(function (info) {
+  if (info.host === Office.HostType.Word) {
+    document.getElementById("run").onclick = run;
+  }
+});
+
+function run() {
+  // Add these debug lines temporarily
+  console.log("Office.js loaded:", typeof Office !== "undefined");
+  console.log("Word supported:", Office.context.requirements.isSetSupported("WordApi", "1.1"));
+  console.log("Word 1.3 supported:", Office.context.requirements.isSetSupported("WordApi", "1.3"));
+
+  Word.run(function (context) {
+    // CHECKPOINT 1 — can we even access document body?
+    var body = context.document.body;
+    context.load(body, "text");
+
+    return context
+      .sync()
+      .then(function () {
+        console.log("CHECKPOINT 1 PASSED — body.text:", body.text);
+
+        // CHECKPOINT 2 — can we insert anything?
+        body.insertText("TEST", "End");
+        return context.sync();
+      })
+      .then(function () {
+        console.log("CHECKPOINT 2 PASSED — insertText worked");
+      });
+  }).catch(function (error) {
+    showMessage("Error: " + error.message, "error");
+    console.error("Full error object:", error);
+    // Log the error code specifically — this tells us exactly which API failed
+    console.error("Error code:", error.code);
+    console.error("Error debug info:", error.debugInfo);
+  });
+}
+
+function showMessage(text, type) {
+  var el = document.getElementById("message");
+  if (el) {
+    el.textContent = text;
+    el.style.color = type === "error" ? "#9C0006" : "#375623";
+  }
+}
