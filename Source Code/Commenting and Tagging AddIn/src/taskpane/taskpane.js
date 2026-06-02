@@ -3,7 +3,7 @@
 // import * as OfficeHelpers from "@microsoft/office-js-helpers";
 // import "office-ui-fabric-js/dist/js/fabric.js";
 
-console.log("DEPLOYED VERSION: 2026-06-01-v4");
+console.log("DEPLOYED VERSION: 2026-06-02-v5");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
