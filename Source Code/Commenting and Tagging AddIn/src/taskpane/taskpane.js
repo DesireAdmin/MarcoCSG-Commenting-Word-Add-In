@@ -12,10 +12,10 @@ async function run() {
       const body = context.document.body;
 
       // No body.load() needed at all!
-      body.insertText(" Hello World!", "End");
+      body.insertText(" Hello Test!", "End");
 
       await context.sync();
-      showMessage("Hello World inserted!", "success");
+      showMessage("Hello Test inserted!", "success");
     });
   } catch (error) {
     console.error("FAILED:", error);
