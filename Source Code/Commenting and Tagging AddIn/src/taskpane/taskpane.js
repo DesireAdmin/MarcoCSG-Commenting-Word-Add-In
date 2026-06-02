@@ -1,4 +1,4 @@
-console.log("DEPLOYED VERSION: 2026-06-02-v5");
+console.log("DEPLOYED VERSION: CLEAR CACHE TEST");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
@@ -11,21 +11,21 @@ async function run() {
     await Word.run(async (context) => {
       const body = context.document.body;
 
-      // No body.load() needed at all!
-      body.insertText(" Hello Test!", "End");
+      // We are NOT loading the body.
+      // We are NOT logging body.text.length.
+      // We are just inserting text and syncing.
+      body.insertText(" Hello Maker!", "End");
 
       await context.sync();
-      showMessage("Hello Test inserted!", "success");
+
+      console.log("Insert worked!");
+      showMessage("Hello Maker inserted!", "success");
     });
   } catch (error) {
     console.error("FAILED:", error);
-    if (error instanceof OfficeExtension.Error) {
-      console.error("Debug info:", JSON.stringify(error.debugInfo));
-    }
     showMessage("Error: " + error.message, "error");
   }
 }
-
 function showMessage(text, type) {
   var el = document.getElementById("message");
   if (el) {
