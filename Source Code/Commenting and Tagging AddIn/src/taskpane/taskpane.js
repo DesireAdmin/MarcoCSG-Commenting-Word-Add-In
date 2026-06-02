@@ -1,8 +1,3 @@
-// NO imports at the top — Office and Word are globals injected by office.js
-// DELETE any lines like:
-// import * as OfficeHelpers from "@microsoft/office-js-helpers";
-// import "office-ui-fabric-js/dist/js/fabric.js";
-
 console.log("DEPLOYED VERSION: 2026-06-02-v5");
 
 Office.onReady(function (info) {
@@ -11,27 +6,35 @@ Office.onReady(function (info) {
   }
 });
 
-function run() {
-  Word.run(function (context) {
-    var body = context.document.body;
-    context.load(body, "text");
+async function run() {
+  try {
+    await Word.run(async (context) => {
+      const body = context.document.body;
 
-    return context
-      .sync()
-      .then(function () {
-        console.log("CHECKPOINT 1 PASSED body.text length:", body.text.length);
-        body.insertText(" Hello World!", "End");
-        return context.sync();
-      })
-      .then(function () {
-        console.log("CHECKPOINT 2 PASSED insert worked");
-        showMessage("Hello World inserted!", "success");
-      });
-  }).catch(function (error) {
-    console.error("FAILED:", error.code, error.message);
-    console.error("debugInfo:", JSON.stringify(error.debugInfo, null, 2));
+      // Preferred syntax over context.load(body, "text")
+      body.load("text");
+
+      // Wait for the sync to completely finish before doing anything else
+      await context.sync();
+
+      // Now it is safe to read the property
+      console.log("CHECKPOINT 1 PASSED body.text length:", body.text.length);
+
+      body.insertText(" Hello Guys!", "End");
+
+      // Sync again to execute the insert action
+      await context.sync();
+
+      console.log("CHECKPOINT 2 PASSED insert worked");
+      showMessage("Hello World inserted!", "success");
+    });
+  } catch (error) {
+    console.error("FAILED:", error);
+    if (error instanceof OfficeExtension.Error) {
+      console.error("Debug info:", JSON.stringify(error.debugInfo));
+    }
     showMessage("Error: " + error.message, "error");
-  });
+  }
 }
 
 function showMessage(text, type) {
