@@ -11,21 +11,10 @@ async function run() {
     await Word.run(async (context) => {
       const body = context.document.body;
 
-      // Preferred syntax over context.load(body, "text")
-      body.load("text");
+      // No body.load() needed at all!
+      body.insertText(" Hello World!", "End");
 
-      // Wait for the sync to completely finish before doing anything else
       await context.sync();
-
-      // Now it is safe to read the property
-      console.log("CHECKPOINT 1 PASSED body.text length:", body.text.length);
-
-      body.insertText(" Hello Guys!", "End");
-
-      // Sync again to execute the insert action
-      await context.sync();
-
-      console.log("CHECKPOINT 2 PASSED insert worked");
       showMessage("Hello World inserted!", "success");
     });
   } catch (error) {
