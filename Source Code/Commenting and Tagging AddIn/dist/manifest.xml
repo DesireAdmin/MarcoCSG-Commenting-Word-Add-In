@@ -21,7 +21,7 @@
     <Host Name="Document"/>
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://desireadmin.github.io/MarcoCSG-Commenting-Word-Add-In/test.html"/>
+    <SourceLocation DefaultValue="https://desireadmin.github.io/MarcoCSG-Commenting-Word-Add-In/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
