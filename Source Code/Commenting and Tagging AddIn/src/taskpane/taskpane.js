@@ -1,26 +1,27 @@
-console.log("DEPLOYED VERSION: COMMON API TEST v1");
+console.log("DEPLOYED VERSION: REQUIREMENT SET CHECK");
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
-    document.getElementById("run").onclick = run;
+    document.getElementById("run").onclick = checkRequirements;
   }
 });
 
-function run() {
-  // Using the Office Common API for on-premises OOS compatibility
-  Office.context.document.setSelectedDataAsync(
-    " Hello World!",
-    { coercionType: Office.CoercionType.Text },
-    function (asyncResult) {
-      if (asyncResult.status === Office.AsyncResultStatus.Failed) {
-        console.error("FAILED:", asyncResult.error.message);
-        showMessage("Error: " + asyncResult.error.message, "error");
-      } else {
-        console.log("Insert worked using Common API!");
-        showMessage("Hello World inserted!", "success");
-      }
-    }
-  );
+function checkRequirements() {
+  // Comments API requires WordApi 1.4
+  const hasWordApi11 = Office.context.requirements.isSetSupported("WordApi", "1.1");
+  const hasWordApi14 = Office.context.requirements.isSetSupported("WordApi", "1.4");
+
+  console.log("WordApi 1.1 Supported:", hasWordApi11);
+  console.log("WordApi 1.4 (Required for Comments) Supported:", hasWordApi14);
+
+  if (!hasWordApi14) {
+    showMessage(
+      "CRITICAL: Your Office Online Server version does NOT support the Native Comments API (Requires WordApi 1.4).",
+      "error"
+    );
+  } else {
+    showMessage("WordApi 1.4 is supported! The issue is a script syntax error.", "success");
+  }
 }
 
 function showMessage(text, type) {
