@@ -270,17 +270,22 @@ async function resolveUserEmail(username) {
 }
 
 async function fetchEmailByLoginName(siteUrl, loginName) {
-  const encoded = encodeURIComponent(loginName);
-  const url = `${siteUrl}/_api/web/siteusers?$filter=LoginName eq '${encoded}'&$select=Email`;
+  try {
+    const encoded = encodeURIComponent(loginName);
+    const url = `${siteUrl}/_api/web/siteusers?$filter=LoginName eq '${encoded}'&$select=Email`;
 
-  const resp = await fetch(url, {
-    credentials: "include",
-    headers: { Accept: "application/json;odata=verbose" },
-  });
+    const resp = await fetch(url, {
+      credentials: "include",
+      headers: { Accept: "application/json;odata=verbose", "Access-Control-Allow-Origin": "*" },
+    });
 
-  if (!resp.ok) return null;
-  const data = await resp.json();
-  return data?.d?.results?.[0]?.Email || null;
+    if (!resp.ok) return null;
+    const data = await resp.json();
+    return data?.d?.results?.[0]?.Email || null;
+  } catch (err) {
+    console.error(`[MentionNotifier] Error fetching email for login ${loginName}:`, err);
+    return null;
+  }
 }
 
 async function getFormDigest(siteUrl) {

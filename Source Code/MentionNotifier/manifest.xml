@@ -10,7 +10,7 @@
   <HighResolutionIconUrl DefaultValue="https://flock-almost-cottage.ngrok-free.dev/assets/icon-64.png"/>
   <SupportUrl DefaultValue="https://flock-almost-cottage.ngrok-free.dev/help"/>
   <AppDomains>
-       <AppDomain>https://flock-almost-cottage.ngrok-free.dev</AppDomain>
+       <AppDomain>https://r365-training.regdocs365.com</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Document"/>
