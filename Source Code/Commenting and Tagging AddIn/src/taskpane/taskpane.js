@@ -149,6 +149,7 @@ async function scanAllComments() {
     await Word.run(async (context) => {
       const comments = context.document.body.getComments();
       comments.load("items/id,items/content,items/resolved");
+      console.log("🚀 ~ scanAllComments ~ context.document.body:", context.document.body);
       await context.sync();
 
       for (const comment of comments.items) {
