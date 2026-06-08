@@ -237,6 +237,7 @@ async function sendNotification(username, bookmarkName, originalText) {
       Body: emailBody,
     },
   };
+  console.log("🚀 ~ sendNotification ~ emailPayload:", emailPayload);
 
   // const sendResp = await fetch(`${siteUrl}/_api/SP.Utilities.Utility.SendEmail`, {
   //   method: "POST",
@@ -249,9 +250,9 @@ async function sendNotification(username, bookmarkName, originalText) {
   //   body: JSON.stringify(emailPayload),
   // });
 
-  if (!sendResp.ok) {
-    throw new Error(`SharePoint Mail server rejected processing context lookup path.`);
-  }
+  // if (!sendResp.ok) {
+  //   throw new Error(`SharePoint Mail server rejected processing context lookup path.`);
+  // }
 }
 
 async function resolveUserEmail(username) {
