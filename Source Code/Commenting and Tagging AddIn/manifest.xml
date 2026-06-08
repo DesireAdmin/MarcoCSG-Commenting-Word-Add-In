@@ -12,11 +12,6 @@
   <AppDomains>
     <AppDomain>https://desireadmin.github.io</AppDomain>
   </AppDomains>
-  <Requirements>
-    <Sets DefaultMinVersion="1.4">
-        <Set Name="WordApi" MinVersion="1.4" />
-    </Sets>
-</Requirements>
   <Hosts>
     <Host Name="Document"/>
   </Hosts>
