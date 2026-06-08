@@ -1,324 +1,307 @@
-/* ========================================================================
-   MentionNotifier Engine with Live SharePoint Typeahead Autocomplete Cache
-   ======================================================================== */
+/* =============================================================
+   MentionNotifier — OOXML Comment Reader for OOS On-Premises
+   v2026-06-08-native-ooxml-cors-fix
+   - Reads comments locally via body.getOoxml() (WordApi 1.1 compliant)
+   - No external file fetch API or JSZip dependencies needed!
+   - Writes [ref:] anchor to document body via Word.run
+   - Tracks processed comments via local in-memory Set to bypass CORS errors
+   ============================================================= */
 
-let allUsersCache = []; // Global in-memory cache for suggestion engine
-const processedIds = new Set();
+console.log("[MentionNotifier] taskpane.js loaded — Native Flat OPC OOXML version (CORS Fix)");
+const emp = require("./emp.json");
+
+// ── Global state ─────────────────────────────────────────────────────────────
+const processedCommentIds = new Set();
 const emailCache = new Map();
-let digestValue = null;
-let digestExpiry = 0;
+let scanLoopActive = false;
+let docSiteUrl = "";
+let docFilePath = "";
 
 const CONFIG = {
   adDomain: "RegDocs365",
-  scanInterval: 8000,
-  authMode: "AD",
+  scanInterval: 10000,
 };
 
+// ── Entry point ──────────────────────────────────────────────────────────────
 Office.onReady(function (info) {
-  if (info.host === Office.HostType.Word) {
-    updateStatus("Connected to Word. Preloading directories...");
+  console.log("[MentionNotifier] Office.onReady fired. Host:", info.host);
 
-    // 1. Immediately cache all available site users for autocomplete lookup
-    preloadSharePointUsers();
-
-    // 2. Attach UI event handlers to input control elements
-    initAutocomplete();
-
-    // 3. Kick off background loop daemon scanning natively
-    setTimeout(scanAllComments, 2000);
-    setInterval(scanAllComments, CONFIG.scanInterval);
-  }
-});
-
-// Pre-fetches real user profiles from SharePoint site collection
-async function preloadSharePointUsers() {
-  try {
-    const docUrl = Office.context.document.url;
-    if (!docUrl) return;
-
-    const siteUrl = extractSiteUrl(docUrl);
-    // PrincipalType eq 1 targets people objects only, skipping security/distribution groups
-    const url = `${siteUrl}/_api/web/siteusers?$select=Title,LoginName,Email&$filter=PrincipalType eq 1 and Email ne null`;
-
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: { Accept: "application/json;odata=verbose" },
-    });
-
-    if (resp.ok) {
-      const data = await resp.json();
-      allUsersCache = data?.d?.results || [];
-      updateStatus(`Autocomplete operational (${allUsersCache.length} profiles cached).`);
-    } else {
-      updateStatus(`Directory initialization warning. Status code: ${resp.status}`);
-    }
-  } catch (err) {
-    console.error("[MentionNotifier] Failed preloading directories:", err);
-    updateStatus("Failed to access user accounts directory.");
-  }
-}
-
-// Binds event listeners to capture the user typing text
-function initAutocomplete() {
-  const input = document.getElementById("commentInput");
-  const box = document.getElementById("suggestionsBox");
-
-  if (!input || !box) return;
-
-  input.addEventListener("input", function (e) {
-    const text = e.target.value;
-    // Captures the text immediately following the last typed @ token
-    const match = text.match(/@([\w.]*)$/);
-
-    if (match) {
-      const query = match[1].toLowerCase();
-      // Match text against Title, Email, or raw Account Username properties
-      const matchingUsers = allUsersCache.filter(
-        (u) =>
-          (u.Title && u.Title.toLowerCase().includes(query)) ||
-          (u.Email && u.Email.toLowerCase().includes(query)) ||
-          (u.LoginName && u.LoginName.toLowerCase().includes(query))
-      );
-
-      renderSuggestions(matchingUsers, match.index, match[0].length);
-    } else {
-      box.style.display = "none";
-    }
-  });
-
-  // Hides suggestion list if user clicks away
-  document.addEventListener("click", function (e) {
-    if (e.target !== input) box.style.display = "none";
-  });
-}
-
-// Renders filtered matches dynamically in the taskpane frame
-function renderSuggestions(users, startIdx, matchLen) {
-  const box = document.getElementById("suggestionsBox");
-  const input = document.getElementById("commentInput");
-  box.innerHTML = "";
-
-  if (users.length === 0) {
-    box.style.display = "none";
+  if (info.host !== Office.HostType.Word) {
+    console.warn("[MentionNotifier] Not Word host — aborting.");
     return;
   }
 
-  box.style.display = "block";
-  // Limit output elements to 5 items max for display layout optimization
-  users.slice(0, 5).forEach((user) => {
-    const div = document.createElement("div");
-    div.className = "suggestion-item";
-    div.innerText = `${user.Title} (${user.Email})`;
+  const docUrl = Office.context.document.url;
+  console.log("[MentionNotifier] Document URL:", docUrl);
 
-    div.onclick = function () {
-      const fullText = input.value;
-      const cleanUsername = extractUsernameFromLogin(user.LoginName);
+  docSiteUrl = extractSiteUrl(docUrl);
+  docFilePath = extractServerRelativePath(docUrl);
 
-      const textBefore = fullText.substring(0, startIdx);
-      const textAfter = fullText.substring(startIdx + matchLen);
+  console.log("[MentionNotifier] Site URL:", docSiteUrl);
+  console.log("[MentionNotifier] Server-relative path:", docFilePath);
 
-      // Auto-inserts the formatted username directly inside the user text frame
-      input.value = `${textBefore}@${cleanUsername}${textAfter}`;
-      box.style.display = "none";
-      input.focus();
-    };
+  updateStatus("Connected. Initialising background scanning...");
 
-    box.appendChild(div);
-  });
+  // First scan after 3s to let Office runtime context stabilize
+  setTimeout(function () {
+    console.log("[MentionNotifier] Starting first scan...");
+    runScanCycle();
+  }, 3000);
+
+  // Set up periodic scanning loop execution
+  setInterval(function () {
+    console.log("[MentionNotifier] Interval scan triggered.");
+    runScanCycle();
+  }, CONFIG.scanInterval);
+});
+
+// ── URL utilities ─────────────────────────────────────────────────────────────
+function extractSiteUrl(docUrl) {
+  try {
+    const parsed = new URL(docUrl);
+    return parsed.origin;
+  } catch (err) {
+    console.error("[URL] extractSiteUrl failed:", err);
+    return docUrl.split("/").slice(0, 3).join("/");
+  }
 }
 
-function extractUsernameFromLogin(loginName) {
-  if (loginName.includes("\\")) return loginName.split("\\")[1];
-  if (loginName.includes("|")) return loginName.split("|").pop();
-  return loginName;
+function extractServerRelativePath(docUrl) {
+  try {
+    const parsed = new URL(docUrl);
+    return decodeURIComponent(parsed.pathname);
+  } catch (err) {
+    console.error("[URL] extractServerRelativePath failed:", err);
+    const origin = docUrl.split("/").slice(0, 3).join("/");
+    return docUrl.replace(origin, "");
+  }
 }
 
-function updateStatus(msg) {
-  const log = document.getElementById("statusLog");
-  if (log) log.innerText = `Status: ${msg}`;
+// ── Scan orchestrator ─────────────────────────────────────────────────────────
+async function runScanCycle() {
+  if (scanLoopActive) return;
+  scanLoopActive = true;
+
+  try {
+    updateStatus("Scanning document comments via native OOXML...");
+    await scanAllCommentsViaOOXML();
+    updateStatus("Scan complete.");
+  } catch (err) {
+    console.error("[Scan] Cycle error:", err);
+    updateStatus("Scan error — check console.");
+  } finally {
+    scanLoopActive = false;
+  }
 }
 
-/* ========================================================================
-   Word Native Document Scanning Background Logic Loop
-   ======================================================================== */
+// ── Helper: Safe isolation of XML nodes by localName ─────────────────────────
+function getNodesByLocalName(parent, localName) {
+  const results = [];
+  const nodes = parent.getElementsByTagName("*");
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].localName === localName) {
+      results.push(nodes[i]);
+    }
+  }
+  return results;
+}
 
-async function scanAllComments() {
+// ── Native Extraction & Inline Comment Injection Loop ──────────────────────────
+async function scanAllCommentsViaOOXML() {
+  // Skip execution if document is in a restricted state
   if (Office.context.document.mode === Office.DocumentMode.ReadOnly) return;
 
   try {
     await Word.run(async (context) => {
-      const comments = context.document.body.getComments();
-      comments.load("items/id,items/content,items/resolved");
+      const body = context.document.body;
+      // getOoxml returns a Flat OPC XML package containing all parts of the document
+      const ooxmlData = body.getOoxml();
       await context.sync();
 
-      for (const comment of comments.items) {
-        try {
-          await processComment(comment, context);
-        } catch (err) {
-          console.error(
-            `[MentionNotifier] Error running processing on comment ID ${comment.id}:`,
-            err
-          );
-          processedIds.add(comment.id);
+      const parser = new DOMParser();
+      const xmlDoc = parser.parseFromString(ooxmlData.value, "text/xml");
+
+      // Isolate the package parts safely using localName to prevent namespace drops
+      const parts = getNodesByLocalName(xmlDoc, "part");
+      let commentsPart = null;
+
+      for (let i = 0; i < parts.length; i++) {
+        if (parts[i].getAttribute("pkg:name") === "/word/comments.xml") {
+          commentsPart = parts[i];
+          break;
         }
+      }
+
+      // Exit early if the document contains no comments
+      if (!commentsPart) {
+        console.log("[MentionNotifier] No comment parts found in document structure.");
+        return;
+      }
+
+      const commentNodes = getNodesByLocalName(commentsPart, "comment");
+      console.log(`[MentionNotifier] Parsing ${commentNodes.length} active XML comments...`);
+
+      let docIsModified = false;
+
+      for (let j = 0; j < commentNodes.length; j++) {
+        const node = commentNodes[j];
+        const commentId = node.getAttribute("w:id");
+        const author = node.getAttribute("w:author") || "Unknown User";
+
+        // Extract and aggregate text strings from the comment body
+        const textNodes = getNodesByLocalName(node, "t");
+        let commentText = "";
+        for (let k = 0; k < textNodes.length; k++) {
+          commentText += textNodes[k].textContent;
+        }
+
+        const alreadyDone = processedCommentIds.has(commentId);
+        const hasRef = commentText.includes("[ref:");
+        const hasMention = /@[\w][\w.]*/.test(commentText);
+
+        // Filter out comments that are already tracked or don't have mentions
+        if (alreadyDone || hasRef || !hasMention) {
+          continue;
+        }
+
+        console.log(
+          `[MentionNotifier] Processing unhandled mention in comment ID ${commentId} by ${author}`
+        );
+
+        const mentionRegex = /@([\w][\w.]*[\w]|[\w])/g;
+        const matches = [...commentText.matchAll(mentionRegex)];
+        const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
+
+        if (uniqueUsers.length === 0) {
+          processedCommentIds.add(commentId);
+          continue;
+        }
+
+        const refId = Math.random().toString(36).substring(2, 8).toUpperCase();
+        const anchor = "[ref:" + refId + "]";
+
+        // ── INLINE XML INJECTION: Insert anchor at the end of the comment box ──
+        const pNodes = getNodesByLocalName(node, "p");
+        if (pNodes.length > 0) {
+          const lastP = pNodes[pNodes.length - 1]; // Target the last paragraph block inside the comment box
+
+          const wNamespace = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+          const xmlNamespace = "http://www.w3.org/XML/1998/namespace";
+
+          // Create a native Word processing Run (<w:r>)
+          const newR = xmlDoc.createElementNS(wNamespace, "w:r");
+          // Create a native Word processing Text node (<w:t>)
+          const newT = xmlDoc.createElementNS(wNamespace, "w:t");
+
+          // Force Word to preserve the leading space before the tracking anchor string
+          newT.setAttributeNS(xmlNamespace, "xml:space", "preserve");
+          newT.textContent = " " + anchor;
+
+          newR.appendChild(newT);
+          lastP.appendChild(newR); // Append directly into the comment box UI block
+          docIsModified = true;
+        }
+
+        // Track state locally
+        processedCommentIds.add(commentId);
+
+        const preview = commentText
+          .replace(/@[\w.]+/g, "")
+          .replace(/\[ref:[^\]]+\]/g, "")
+          .trim()
+          .substring(0, 150);
+
+        // Dispatch notification routine asynchronously without halting the loop execution
+        uniqueUsers.forEach((username) => {
+          sendNotification(username, anchor, preview, author, docSiteUrl, docFilePath);
+        });
+      }
+
+      // If changes were made to any comment box DOM trees, serialize and commit back into Word
+      if (docIsModified) {
+        const serializer = new XMLSerializer();
+        const updatedOoxml = serializer.serializeToString(xmlDoc);
+
+        // Replaces the complete structural package including modified comment blocks
+        body.insertOoxml(updatedOoxml, "Replace");
+        await context.sync();
+        console.log(
+          "[MentionNotifier] OOXML updated with comment box inline anchors successfully."
+        );
       }
     });
   } catch (err) {
-    console.error("[MentionNotifier] Scanner daemon error stack:", err);
+    console.error("[MentionNotifier] Critical failure in OOXML Extraction/Injection Loop:", err);
   }
 }
 
-async function processComment(comment, context) {
-  if (comment.resolved || processedIds.has(comment.id)) return;
-
-  const text = comment.content || "";
-  if (text.includes("[ref:")) {
-    processedIds.add(comment.id);
+// ── Email notification ────────────────────────────────────────────────────────
+async function sendNotification(
+  username,
+  anchor,
+  preview,
+  commentAuthor,
+  siteUrl,
+  serverRelativePath
+) {
+  let email;
+  try {
+    email = await resolveUserEmail(username, siteUrl);
+  } catch (err) {
+    console.error("[Email] Could not resolve email for", username, "—", err.message);
     return;
   }
 
-  const mentionRegex = /@([\w][\w.]*[\w]|[\w])/g;
-  const matches = [...text.matchAll(mentionRegex)];
-  if (matches.length === 0) return;
-
-  const uniqueId = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const bookmarkName = `Ref_${uniqueId}`;
-  const anchor = `[ref:${bookmarkName}]`;
-
-  // Inject tracking bookmark directly over the highlighted target area text string
-  const commentRange = comment.getRange();
-  commentRange.insertBookmark(bookmarkName);
-
-  // Append reference metadata tracking string to the comment content
-  comment.content = text.trim() + "  " + anchor;
-  await context.sync();
-
-  processedIds.add(comment.id);
-  const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
-
-  await Promise.allSettled(
-    uniqueUsers.map((username) => sendNotification(username, bookmarkName, text))
-  );
-}
-
-async function sendNotification(username, bookmarkName, originalText) {
   const docUrl = Office.context.document.url;
-  const siteUrl = extractSiteUrl(docUrl);
-  const cleanDocUrl = buildCleanDocUrl(docUrl);
-  const directCommentUrl = `${cleanDocUrl}#${bookmarkName}`;
-
-  const email = await resolveUserEmail(username);
-  const digest = await getFormDigest(siteUrl);
-
-  const commentPreview = originalText
-    .replace(/@[\w.]+/g, "")
-    .replace(/\[ref:[^\]]+\]/g, "")
-    .trim()
-    .substring(0, 150);
+  const anchorUrl = docUrl + "#" + anchor;
 
   const emailBody = [
     "Hello,",
     "",
-    `You have been tagged in a document comment.`,
+    "You were mentioned in a document comment by " + commentAuthor + ".",
     "",
-    `Comment Snippet: "${commentPreview}"`,
+    'Comment: "' + preview + '"',
     "",
-    "👉 CLICK THE LINK BELOW TO OPEN THE DOCUMENT DIRECTLY AT THIS COMMENT LOCATION:",
-    directCommentUrl,
-    "",
-    "Note: Clicking this link opens Word Desktop directly to the referenced page.",
+    "Open the document here:",
+    anchorUrl,
   ].join("\n");
 
-  const emailPayload = {
-    properties: {
-      __metadata: { type: "SP.Utilities.EmailProperties" },
-      To: { results: [email] },
-      Subject: "Direct Link: You were mentioned in a document comment",
-      Body: emailBody,
-    },
-  };
-  console.log("🚀 ~ sendNotification ~ emailPayload:", emailPayload);
-
-  // const sendResp = await fetch(`${siteUrl}/_api/SP.Utilities.Utility.SendEmail`, {
-  //   method: "POST",
-  //   credentials: "include",
-  //   headers: {
-  //     "Content-Type": "application/json;odata=verbose",
-  //     "X-RequestDigest": digest,
-  //     Accept: "application/json;odata=verbose",
-  //   },
-  //   body: JSON.stringify(emailPayload),
-  // });
-
-  // if (!sendResp.ok) {
-  //   throw new Error(`SharePoint Mail server rejected processing context lookup path.`);
-  // }
+  console.log("[Email] SEND SKIPPED (commented out). Would send to:", email);
 }
 
-async function resolveUserEmail(username) {
+// ── User resolution (Using your offline emp.json payload) ─────────────────────
+async function resolveUserEmail(username, siteUrl) {
   if (emailCache.has(username)) return emailCache.get(username);
-  const siteUrl = extractSiteUrl(Office.context.document.url);
-  const loginNameWithPrefix = `i:0#.w|${CONFIG.adDomain}\\${username}`;
-  const loginNamePlain = `${CONFIG.adDomain}\\${username}`;
 
-  let email = await fetchEmailByLoginName(siteUrl, loginNameWithPrefix);
-  if (!email) email = await fetchEmailByLoginName(siteUrl, loginNamePlain);
+  const candidates = [
+    "i:0#.w|" + CONFIG.adDomain + "\\" + username,
+    CONFIG.adDomain + "\\" + username,
+  ];
 
-  if (!email) throw new Error(`Active Directory profile resolution failed for: ${username}`);
+  for (const loginName of candidates) {
+    const email = await fetchEmailByLoginName(siteUrl, loginName.toLowerCase());
+    if (email) {
+      emailCache.set(username, email);
+      return email;
+    }
+  }
 
-  emailCache.set(username, email);
-  return email;
+  throw new Error("[UserResolve] No email found for: " + username);
 }
 
 async function fetchEmailByLoginName(siteUrl, loginName) {
   try {
-    const encoded = encodeURIComponent(loginName);
-    const url = `${siteUrl}/_api/web/siteusers?$filter=LoginName eq '${encoded}'&$select=Email`;
-
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: { Accept: "application/json;odata=verbose", "Access-Control-Allow-Origin": "*" },
-    });
-
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data?.d?.results?.[0]?.Email || null;
+    const Email = emp.feed.entry.find(
+      (e) => e.content.properties.LoginName.__text === "i:0#.w|" + loginName
+    )?.content.properties.Email.__text;
+    return Email || null;
   } catch (err) {
-    console.error(`[MentionNotifier] Error fetching email for login ${loginName}:`, err);
     return null;
   }
 }
 
-async function getFormDigest(siteUrl) {
-  const now = Date.now();
-  if (digestValue && now < digestExpiry) return digestValue;
-
-  const resp = await fetch(`${siteUrl}/_api/contextinfo`, {
-    method: "POST",
-    credentials: "include",
-    headers: { Accept: "application/json;odata=verbose" },
-  });
-
-  if (!resp.ok) throw new Error("Digest validation acquisition failed.");
-
-  const data = await resp.json();
-  digestValue = data.d.GetContextWebInformation.FormDigestValue;
-  digestExpiry = now + 20 * 60 * 1000;
-  return digestValue;
-}
-
-function extractSiteUrl(docUrl) {
-  const layoutsIdx = docUrl.indexOf("/_layouts");
-  if (layoutsIdx > -1) return docUrl.substring(0, layoutsIdx);
-  return new URL(docUrl).origin;
-}
-
-function buildCleanDocUrl(wopiUrl) {
-  try {
-    const url = new URL(wopiUrl);
-    const source = url.searchParams.get("source");
-    return source ? decodeURIComponent(source) : `${url.origin}${url.pathname}`;
-  } catch {
-    return wopiUrl;
-  }
+function updateStatus(msg) {
+  console.log("[Status]", msg);
+  const el = document.getElementById("statusLog");
+  if (el) el.innerText = "Status: " + msg;
 }
