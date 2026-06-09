@@ -23,51 +23,86 @@
 
     <!-- Template styles -->
     <link href="taskpane.css" rel="stylesheet" type="text/css" />
+
+    <style>
+      /* Quick responsive UI additions for the autocomplete list */
+      .sandbox-container {
+        padding: 15px;
+      }
+      #commentInput {
+        width: 100%;
+        padding: 8px;
+        box-sizing: border-box;
+        margin-top: 10px;
+        font-size: 14px;
+        border: 1px solid #a1a1a1;
+      }
+      #suggestionsBox {
+        border: 1px solid #ced4da;
+        border-top: none;
+        max-height: 160px;
+        overflow-y: auto;
+        background: #ffffff;
+        position: absolute;
+        width: calc(100% - 30px);
+        z-index: 1000;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+      }
+      .suggestion-item {
+        padding: 8px 12px;
+        cursor: pointer;
+        color: #333333;
+        font-size: 13px;
+        border-bottom: 1px solid #f3f3f3;
+      }
+      .suggestion-item:hover {
+        background-color: #f3f2f1;
+        color: #0078d4;
+      }
+      #statusLog {
+        font-weight: 600;
+        color: #0078d4;
+        margin-bottom: 15px;
+        font-size: 13px;
+      }
+    </style>
   </head>
 
   <body class="ms-font-m ms-welcome ms-Fabric">
     <header class="ms-welcome__header ms-bgColor-neutralLighter">
-      <img
-        width="90"
-        height="90"
-        src="../../assets/logo-filled.png"
-        alt="Contoso"
-        title="Contoso"
-      />
-      <h1 class="ms-font-su">Welcome</h1>
+      <h1 class="ms-font-su">Mention Notifier</h1>
+      <p class="ms-font-m">Local Test Environment</p>
     </header>
-    <section id="sideload-msg" class="ms-welcome__main">
-      <h2 class="ms-font-xl">
-        Please
-        <a
-          target="_blank"
-          href="https://learn.microsoft.com/office/dev/add-ins/testing/test-debug-office-add-ins#sideload-an-office-add-in-for-testing"
-          >sideload</a
-        >
-        your add-in to see app body.
-      </h2>
-    </section>
-    <main id="app-body" class="ms-welcome__main" style="display: none">
-      <h2 class="ms-font-xl">Discover what Office Add-ins can do for you today!</h2>
-      <ul class="ms-List ms-welcome__features">
-        <li class="ms-ListItem">
-          <i class="ms-Icon ms-Icon--Ribbon ms-font-xl"></i>
-          <span class="ms-font-m">Achieve more with Office integration</span>
-        </li>
-        <li class="ms-ListItem">
-          <i class="ms-Icon ms-Icon--Unlock ms-font-xl"></i>
-          <span class="ms-font-m">Unlock features and functionality</span>
-        </li>
-        <li class="ms-ListItem">
-          <i class="ms-Icon ms-Icon--Design ms-font-xl"></i>
-          <span class="ms-font-m">Create and visualize like a pro</span>
-        </li>
-      </ul>
-      <p class="ms-font-l">Modify the source files, then click <b>Run</b>.</p>
-      <div role="button" id="run" class="ms-welcome__action ms-Button ms-Button--hero ms-font-xl">
-        <span class="ms-Button-label">Run</span>
+
+    <main id="app-body" class="sandbox-container">
+      <div id="statusLog">Status: Initializing Sandbox...</div>
+
+      <label class="ms-font-m" style="font-weight: 600" for="commentInput"
+        >Test Taskpane Mentions Input:</label
+      >
+      <p class="ms-font-s" style="color: #666; margin: 4px 0 10px 0">
+        Type <b>@</b> inside the field below to query live profiles from <code>emp.json</code>.
+      </p>
+
+      <div style="position: relative">
+        <input
+          id="commentInput"
+          type="text"
+          placeholder="Type @ followed by names..."
+          autocomplete="off"
+        />
+
+        <div id="suggestionsBox" style="display: none"></div>
       </div>
-      <p><label id="item-subject"></label></p>
+
+      <div style="margin-top: 30px; border-top: 1px solid #eaeaea; padding-top: 15px">
+        <h3 class="ms-font-l" style="margin: 0 0 8px 0;">Automated Background Activity</h3>
+        <p class="ms-font-s" style="color: #444; line-height: 1.4">
+          The add-in background loop scans for native Word comments every few seconds. When an
+          unhandled mention is discovered, tracking tags will be inserted and mock email profiles
+          will dump straight to your <b>Browser Developer Tools Console (F12)</b>.
+        </p>
+      </div>
     </main>
   </body>
 </html>

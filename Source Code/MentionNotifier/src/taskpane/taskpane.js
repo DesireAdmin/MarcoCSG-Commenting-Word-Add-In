@@ -1,60 +1,47 @@
 /* ========================================================================
-   MentionNotifier Engine with Live SharePoint Typeahead Autocomplete Cache
+   MentionNotifier Engine (Local Sandbox & Native getComments API View)
    ======================================================================== */
 
-let allUsersCache = []; // Global in-memory cache for suggestion engine
+let allUsersCache = []; // Global in-memory cache loaded from local JSON
 const processedIds = new Set();
 const emailCache = new Map();
-let digestValue = null;
-let digestExpiry = 0;
 
 const CONFIG = {
   adDomain: "RegDocs365",
   scanInterval: 8000,
-  authMode: "AD",
 };
 
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
-    updateStatus("Connected to Word. Preloading directories...");
+    updateStatus("Connected to Word. Loading local sandbox directories...");
 
-    // 1. Immediately cache all available site users for autocomplete lookup
-    preloadSharePointUsers();
+    // 1. Preload user profiles from local/relative json file to avoid CORS blocks
+    preloadLocalUsers();
 
     // 2. Attach UI event handlers to input control elements
     initAutocomplete();
 
-    // 3. Kick off background loop daemon scanning natively
+    // 3. Kick off native document comment scan background loop
     setTimeout(scanAllComments, 2000);
     setInterval(scanAllComments, CONFIG.scanInterval);
   }
 });
 
-// Pre-fetches real user profiles from SharePoint site collection
-async function preloadSharePointUsers() {
+// Pre-fetches real user profiles from local emp.json file asset
+async function preloadLocalUsers() {
   try {
-    const docUrl = Office.context.document.url;
-    if (!docUrl) return;
-
-    const siteUrl = extractSiteUrl(docUrl);
-    // PrincipalType eq 1 targets people objects only, skipping security/distribution groups
-    const url = `${siteUrl}/_api/web/siteusers?$select=Title,LoginName,Email&$filter=PrincipalType eq 1 and Email ne null`;
-
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: { Accept: "application/json;odata=verbose" },
-    });
+    // Relative fetch ensures no CORS errors during standard local development/testing
+    const resp = await fetch("emp.json");
 
     if (resp.ok) {
-      const data = await resp.json();
-      allUsersCache = data?.d?.results || [];
-      updateStatus(`Autocomplete operational (${allUsersCache.length} profiles cached).`);
+      allUsersCache = await resp.json();
+      updateStatus(`Operational (${allUsersCache.length} static profiles loaded from emp.json).`);
     } else {
-      updateStatus(`Directory initialization warning. Status code: ${resp.status}`);
+      updateStatus(`Directory asset warning. Status code: ${resp.status}`);
     }
   } catch (err) {
-    console.error("[MentionNotifier] Failed preloading directories:", err);
-    updateStatus("Failed to access user accounts directory.");
+    console.error("[MentionNotifier] Failed preloading local emp.json file:", err);
+    updateStatus("Failed to access local user accounts directory asset.");
   }
 }
 
@@ -67,12 +54,10 @@ function initAutocomplete() {
 
   input.addEventListener("input", function (e) {
     const text = e.target.value;
-    // Captures the text immediately following the last typed @ token
     const match = text.match(/@([\w.]*)$/);
 
     if (match) {
       const query = match[1].toLowerCase();
-      // Match text against Title, Email, or raw Account Username properties
       const matchingUsers = allUsersCache.filter(
         (u) =>
           (u.Title && u.Title.toLowerCase().includes(query)) ||
@@ -86,7 +71,6 @@ function initAutocomplete() {
     }
   });
 
-  // Hides suggestion list if user clicks away
   document.addEventListener("click", function (e) {
     if (e.target !== input) box.style.display = "none";
   });
@@ -104,7 +88,6 @@ function renderSuggestions(users, startIdx, matchLen) {
   }
 
   box.style.display = "block";
-  // Limit output elements to 5 items max for display layout optimization
   users.slice(0, 5).forEach((user) => {
     const div = document.createElement("div");
     div.className = "suggestion-item";
@@ -112,12 +95,11 @@ function renderSuggestions(users, startIdx, matchLen) {
 
     div.onclick = function () {
       const fullText = input.value;
-      const cleanUsername = extractUsernameFromLogin(user.LoginName);
+      const cleanUsername = extractUsernameFromLogin(user.LoginName || "");
 
       const textBefore = fullText.substring(0, startIdx);
       const textAfter = fullText.substring(startIdx + matchLen);
 
-      // Auto-inserts the formatted username directly inside the user text frame
       input.value = `${textBefore}@${cleanUsername}${textAfter}`;
       box.style.display = "none";
       input.focus();
@@ -139,7 +121,7 @@ function updateStatus(msg) {
 }
 
 /* ========================================================================
-   Word Native Document Scanning Background Logic Loop
+   Word Native Document Scanning (getComments API Approach)
    ======================================================================== */
 
 async function scanAllComments() {
@@ -147,18 +129,16 @@ async function scanAllComments() {
 
   try {
     await Word.run(async (context) => {
+      // Pull native text comment elements inside the operational document body
       const comments = context.document.body.getComments();
-      comments.load("items/id,items/content,items/resolved");
+      comments.load("items/id,items/content,items/resolved,items/author");
       await context.sync();
 
       for (const comment of comments.items) {
         try {
           await processComment(comment, context);
         } catch (err) {
-          console.error(
-            `[MentionNotifier] Error running processing on comment ID ${comment.id}:`,
-            err
-          );
+          console.error(`[MentionNotifier] Error processing comment ID ${comment.id}:`, err);
           processedIds.add(comment.id);
         }
       }
@@ -181,34 +161,30 @@ async function processComment(comment, context) {
   const matches = [...text.matchAll(mentionRegex)];
   if (matches.length === 0) return;
 
+  // Generate random tracking code signature
   const uniqueId = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const bookmarkName = `Ref_${uniqueId}`;
-  const anchor = `[ref:${bookmarkName}]`;
+  const anchor = `[ref:${uniqueId}]`;
 
-  // Inject tracking bookmark directly over the highlighted target area text string
-  const commentRange = comment.getRange();
-  commentRange.insertBookmark(bookmarkName);
-
-  // Append reference metadata tracking string to the comment content
+  // Append reference code onto the comment box content native structure
   comment.content = text.trim() + "  " + anchor;
   await context.sync();
 
   processedIds.add(comment.id);
   const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
+  const authorName = comment.author || "A collaborator";
 
-  await Promise.allSettled(
-    uniqueUsers.map((username) => sendNotification(username, bookmarkName, text))
-  );
+  // Dispatch individual sandbox console alerts for matched usernames
+  for (const username of uniqueUsers) {
+    await sendNotificationSandbox(username, anchor, text, authorName);
+  }
 }
 
-async function sendNotification(username, bookmarkName, originalText) {
-  const docUrl = Office.context.document.url;
-  const siteUrl = extractSiteUrl(docUrl);
+// Sandbox notification: purely maps data locally and dumps body onto console logs
+async function sendNotificationSandbox(username, anchor, originalText, authorName) {
+  const docUrl =
+    Office.context.document.url || "https://local-testing-environment/mock_document.docx";
   const cleanDocUrl = buildCleanDocUrl(docUrl);
-  const directCommentUrl = `${cleanDocUrl}#${bookmarkName}`;
-
-  const email = await resolveUserEmail(username);
-  const digest = await getFormDigest(siteUrl);
+  const email = await resolveUserEmailLocal(username);
 
   const commentPreview = originalText
     .replace(/@[\w.]+/g, "")
@@ -216,101 +192,51 @@ async function sendNotification(username, bookmarkName, originalText) {
     .trim()
     .substring(0, 150);
 
+  // Email format printing full URL and text tag instruction explicitly
   const emailBody = [
+    "=========================================================================",
+    "MOCK EMAIL NOTIFICATION DISPATCH (SANDBOX TRACE LOG)",
+    "=========================================================================",
+    `To: ${email}`,
+    `Subject: Attention: You were mentioned in a comment - ${anchor}`,
+    "-------------------------------------------------------------------------",
     "Hello,",
     "",
-    `You have been tagged in a document comment.`,
+    `You have been mentioned by ${authorName} in a document comment.`,
     "",
     `Comment Snippet: "${commentPreview}"`,
     "",
-    "👉 CLICK THE LINK BELOW TO OPEN THE DOCUMENT DIRECTLY AT THIS COMMENT LOCATION:",
-    directCommentUrl,
+    "👉 FULL DOCUMENT URL:",
+    cleanDocUrl,
     "",
-    "Note: Clicking this link opens Word Desktop directly to the referenced page.",
+    "👉 HOW TO FIND THIS COMMENT:",
+    "Please copy the reference tag below, open the document, and use the Find feature (Ctrl + F)",
+    "to look for this tag inside the document or its comments pane:",
+    anchor,
+    "",
+    "Note: This reference tag is uniquely generated to track and locate this comment transaction.",
+    "=========================================================================",
   ].join("\n");
 
-  const emailPayload = {
-    properties: {
-      __metadata: { type: "SP.Utilities.EmailProperties" },
-      To: { results: [email] },
-      Subject: "Direct Link: You were mentioned in a document comment",
-      Body: emailBody,
-    },
-  };
-  console.log("🚀 ~ sendNotification ~ emailPayload:", emailPayload);
-
-  // const sendResp = await fetch(`${siteUrl}/_api/SP.Utilities.Utility.SendEmail`, {
-  //   method: "POST",
-  //   credentials: "include",
-  //   headers: {
-  //     "Content-Type": "application/json;odata=verbose",
-  //     "X-RequestDigest": digest,
-  //     Accept: "application/json;odata=verbose",
-  //   },
-  //   body: JSON.stringify(emailPayload),
-  // });
-
-  // if (!sendResp.ok) {
-  //   throw new Error(`SharePoint Mail server rejected processing context lookup path.`);
-  // }
+  // Output email structure details strictly onto context dev consoles
+  console.log(emailBody);
 }
 
-async function resolveUserEmail(username) {
+// Safe resolution directly parsing global cache loaded via emp.json
+async function resolveUserEmailLocal(username) {
   if (emailCache.has(username)) return emailCache.get(username);
-  const siteUrl = extractSiteUrl(Office.context.document.url);
-  const loginNameWithPrefix = `i:0#.w|${CONFIG.adDomain}\\${username}`;
-  const loginNamePlain = `${CONFIG.adDomain}\\${username}`;
 
-  let email = await fetchEmailByLoginName(siteUrl, loginNameWithPrefix);
-  if (!email) email = await fetchEmailByLoginName(siteUrl, loginNamePlain);
-
-  if (!email) throw new Error(`Active Directory profile resolution failed for: ${username}`);
-
-  emailCache.set(username, email);
-  return email;
-}
-
-async function fetchEmailByLoginName(siteUrl, loginName) {
-  try {
-    const encoded = encodeURIComponent(loginName);
-    const url = `${siteUrl}/_api/web/siteusers?$filter=LoginName eq '${encoded}'&$select=Email`;
-
-    const resp = await fetch(url, {
-      credentials: "include",
-      headers: { Accept: "application/json;odata=verbose", "Access-Control-Allow-Origin": "*" },
-    });
-
-    if (!resp.ok) return null;
-    const data = await resp.json();
-    return data?.d?.results?.[0]?.Email || null;
-  } catch (err) {
-    console.error(`[MentionNotifier] Error fetching email for login ${loginName}:`, err);
-    return null;
-  }
-}
-
-async function getFormDigest(siteUrl) {
-  const now = Date.now();
-  if (digestValue && now < digestExpiry) return digestValue;
-
-  const resp = await fetch(`${siteUrl}/_api/contextinfo`, {
-    method: "POST",
-    credentials: "include",
-    headers: { Accept: "application/json;odata=verbose" },
+  const lowerUser = username.toLowerCase();
+  const foundUser = allUsersCache.find((u) => {
+    const cleanLogin = extractUsernameFromLogin(u.LoginName || "").toLowerCase();
+    const cleanTitle = (u.Title || "").toLowerCase();
+    return cleanLogin === lowerUser || cleanTitle === lowerUser;
   });
 
-  if (!resp.ok) throw new Error("Digest validation acquisition failed.");
-
-  const data = await resp.json();
-  digestValue = data.d.GetContextWebInformation.FormDigestValue;
-  digestExpiry = now + 20 * 60 * 1000;
-  return digestValue;
-}
-
-function extractSiteUrl(docUrl) {
-  const layoutsIdx = docUrl.indexOf("/_layouts");
-  if (layoutsIdx > -1) return docUrl.substring(0, layoutsIdx);
-  return new URL(docUrl).origin;
+  // Fallback pattern to make testing fluid even if user is missing from emp.json
+  const email = foundUser ? foundUser.Email : `${username}@domain.local`;
+  emailCache.set(username, email);
+  return email;
 }
 
 function buildCleanDocUrl(wopiUrl) {
