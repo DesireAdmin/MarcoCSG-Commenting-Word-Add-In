@@ -4,9 +4,11 @@
       "@babel/preset-env",
       {
         "targets": {
-          "esmodules": false
-        }
+          "browsers": ["last 2 Chrome versions", "last 2 Edge versions"]
+        },
+        "useBuiltIns": false,
+        "corejs": false
       }
-    ],
+    ]
   ]
 }
