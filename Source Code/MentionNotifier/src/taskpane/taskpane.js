@@ -1,8 +1,8 @@
 /* ========================================================================
-   MentionNotifier Engine (Local Sandbox & Native getComments API View)
+   MentionNotifier Engine (Local Sandbox & Native Word Comments Mapping)
    ======================================================================== */
 
-let allUsersCache = []; // Global in-memory cache loaded from local JSON
+let allUsersCache = []; // Global in-memory cache loaded from local JSON feed
 const processedIds = new Set();
 const emailCache = new Map();
 
@@ -11,6 +11,8 @@ const CONFIG = {
   scanInterval: 8000,
 };
 
+const emp = require("./emp.json");
+
 Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
     updateStatus("Connected to Word. Loading local sandbox directories...");
@@ -18,7 +20,7 @@ Office.onReady(function (info) {
     // 1. Preload user profiles from local/relative json file to avoid CORS blocks
     preloadLocalUsers();
 
-    // 2. Attach UI event handlers to input control elements
+    // 2. Attach UI event handlers to input and submission controls
     initAutocomplete();
 
     // 3. Kick off native document comment scan background loop
@@ -30,14 +32,11 @@ Office.onReady(function (info) {
 // Pre-fetches real user profiles from local emp.json file asset
 async function preloadLocalUsers() {
   try {
-    // Relative fetch ensures no CORS errors during standard local development/testing
-    const resp = await fetch("emp.json");
-
-    if (resp.ok) {
-      allUsersCache = await resp.json();
+    if (emp && emp.feed && emp.feed.entry) {
+      allUsersCache = emp.feed.entry;
       updateStatus(`Operational (${allUsersCache.length} static profiles loaded from emp.json).`);
     } else {
-      updateStatus(`Directory asset warning. Status code: ${resp.status}`);
+      updateStatus("Directory structure mismatch inside emp.json.");
     }
   } catch (err) {
     console.error("[MentionNotifier] Failed preloading local emp.json file:", err);
@@ -45,25 +44,33 @@ async function preloadLocalUsers() {
   }
 }
 
-// Binds event listeners to capture the user typing text
+// Binds event listeners to capture typing patterns and the submit button action
 function initAutocomplete() {
   const input = document.getElementById("commentInput");
   const box = document.getElementById("suggestionsBox");
+  const addBtn = document.getElementById("addCommentBtn");
 
   if (!input || !box) return;
 
+  // Handle autocomplete as user types
   input.addEventListener("input", function (e) {
     const text = e.target.value;
     const match = text.match(/@([\w.]*)$/);
 
     if (match) {
       const query = match[1].toLowerCase();
-      const matchingUsers = allUsersCache.filter(
-        (u) =>
-          (u.Title && u.Title.toLowerCase().includes(query)) ||
-          (u.Email && u.Email.toLowerCase().includes(query)) ||
-          (u.LoginName && u.LoginName.toLowerCase().includes(query))
-      );
+
+      const matchingUsers = allUsersCache.filter((u) => {
+        const props = u.content && u.content.properties;
+        if (!props) return false;
+
+        const title = props.Title && props.Title.__text ? props.Title.__text.toLowerCase() : "";
+        const email = props.Email && props.Email.__text ? props.Email.__text.toLowerCase() : "";
+        const loginName =
+          props.LoginName && props.LoginName.__text ? props.LoginName.__text.toLowerCase() : "";
+
+        return title.includes(query) || email.includes(query) || loginName.includes(query);
+      });
 
       renderSuggestions(matchingUsers, match.index, match[0].length);
     } else {
@@ -71,9 +78,15 @@ function initAutocomplete() {
     }
   });
 
+  // Close dropdown if user clicks away
   document.addEventListener("click", function (e) {
     if (e.target !== input) box.style.display = "none";
   });
+
+  // Attach submission click action to create the comment
+  if (addBtn) {
+    addBtn.onclick = createNativeCommentFromTaskpane;
+  }
 }
 
 // Renders filtered matches dynamically in the taskpane frame
@@ -89,13 +102,23 @@ function renderSuggestions(users, startIdx, matchLen) {
 
   box.style.display = "block";
   users.slice(0, 5).forEach((user) => {
+    const props = user.content && user.content.properties;
+    if (!props) return;
+
+    const title = props.Title && props.Title.__text ? props.Title.__text : "Unknown User";
+    const email = props.Email && props.Email.__text ? props.Email.__text : "No Email Provided";
+    const loginName = props.LoginName && props.LoginName.__text ? props.LoginName.__text : "";
+
     const div = document.createElement("div");
     div.className = "suggestion-item";
-    div.innerText = `${user.Title} (${user.Email})`;
+    div.style.padding = "6px";
+    div.style.cursor = "pointer";
+    div.style.borderBottom = "1px solid #eee";
+    div.innerText = `${title} (${email})`;
 
     div.onclick = function () {
       const fullText = input.value;
-      const cleanUsername = extractUsernameFromLogin(user.LoginName || "");
+      const cleanUsername = extractUsernameFromLogin(loginName);
 
       const textBefore = fullText.substring(0, startIdx);
       const textAfter = fullText.substring(startIdx + matchLen);
@@ -109,7 +132,44 @@ function renderSuggestions(users, startIdx, matchLen) {
   });
 }
 
+/**
+ * NEW FUNCTIONALITY: Programmatically creates a native comment card
+ * at the user's current cursor location inside the active document text body.
+ */
+async function createNativeCommentFromTaskpane() {
+  const input = document.getElementById("commentInput");
+  if (!input || !input.value.trim()) {
+    updateStatus("Cannot insert an empty comment.");
+    return;
+  }
+
+  const commentText = input.value.trim();
+
+  try {
+    await Word.run(async (context) => {
+      const selection = context.document.getSelection();
+
+      // Safety Fallback Check: insertComment requires WordApi 1.2+
+      if (typeof selection.insertComment === "function") {
+        selection.insertComment(commentText);
+        updateStatus("Native comment card generated.");
+        input.value = ""; // Clean input panel on success
+      } else {
+        // If deployed to older OOS environments restricted strictly to WordApi 1.1
+        selection.insertText(` [Comment: ${commentText}]`, "End");
+        updateStatus("Inserted inline (Word API insertComment is unavailable).");
+      }
+
+      await context.sync();
+    });
+  } catch (err) {
+    console.error("[MentionNotifier] Failed to write native comment control:", err);
+    updateStatus("Error writing comment to document.");
+  }
+}
+
 function extractUsernameFromLogin(loginName) {
+  if (!loginName) return "";
   if (loginName.includes("\\")) return loginName.split("\\")[1];
   if (loginName.includes("|")) return loginName.split("|").pop();
   return loginName;
@@ -129,7 +189,6 @@ async function scanAllComments() {
 
   try {
     await Word.run(async (context) => {
-      // Pull native text comment elements inside the operational document body
       const comments = context.document.body.getComments();
       comments.load("items/id,items/content,items/resolved,items/author");
       await context.sync();
@@ -161,11 +220,9 @@ async function processComment(comment, context) {
   const matches = [...text.matchAll(mentionRegex)];
   if (matches.length === 0) return;
 
-  // Generate random tracking code signature
   const uniqueId = Math.random().toString(36).substring(2, 8).toUpperCase();
   const anchor = `[ref:${uniqueId}]`;
 
-  // Append reference code onto the comment box content native structure
   comment.content = text.trim() + "  " + anchor;
   await context.sync();
 
@@ -173,16 +230,13 @@ async function processComment(comment, context) {
   const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
   const authorName = comment.author || "A collaborator";
 
-  // Dispatch individual sandbox console alerts for matched usernames
   for (const username of uniqueUsers) {
     await sendNotificationSandbox(username, anchor, text, authorName);
   }
 }
 
-// Sandbox notification: purely maps data locally and dumps body onto console logs
 async function sendNotificationSandbox(username, anchor, originalText, authorName) {
-  const docUrl =
-    Office.context.document.url || "https://local-testing-environment/mock_document.docx";
+  const docUrl = Office.context.document.url;
   const cleanDocUrl = buildCleanDocUrl(docUrl);
   const email = await resolveUserEmailLocal(username);
 
@@ -192,7 +246,6 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
     .trim()
     .substring(0, 150);
 
-  // Email format printing full URL and text tag instruction explicitly
   const emailBody = [
     "=========================================================================",
     "MOCK EMAIL NOTIFICATION DISPATCH (SANDBOX TRACE LOG)",
@@ -218,23 +271,37 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
     "=========================================================================",
   ].join("\n");
 
-  // Output email structure details strictly onto context dev consoles
   console.log(emailBody);
 }
 
-// Safe resolution directly parsing global cache loaded via emp.json
 async function resolveUserEmailLocal(username) {
   if (emailCache.has(username)) return emailCache.get(username);
 
   const lowerUser = username.toLowerCase();
   const foundUser = allUsersCache.find((u) => {
-    const cleanLogin = extractUsernameFromLogin(u.LoginName || "").toLowerCase();
-    const cleanTitle = (u.Title || "").toLowerCase();
+    const props = u.content && u.content.properties;
+    if (!props) return false;
+
+    const loginName = props.LoginName && props.LoginName.__text ? props.LoginName.__text : "";
+    const title = props.Title && props.Title.__text ? props.Title.__text : "";
+
+    const cleanLogin = extractUsernameFromLogin(loginName).toLowerCase();
+    const cleanTitle = title.toLowerCase();
+
     return cleanLogin === lowerUser || cleanTitle === lowerUser;
   });
 
-  // Fallback pattern to make testing fluid even if user is missing from emp.json
-  const email = foundUser ? foundUser.Email : `${username}@domain.local`;
+  let email = `${username}@domain.local`;
+  if (
+    foundUser &&
+    foundUser.content &&
+    foundUser.content.properties &&
+    foundUser.content.properties.Email &&
+    foundUser.content.properties.Email.__text
+  ) {
+    email = foundUser.content.properties.Email.__text;
+  }
+
   emailCache.set(username, email);
   return email;
 }

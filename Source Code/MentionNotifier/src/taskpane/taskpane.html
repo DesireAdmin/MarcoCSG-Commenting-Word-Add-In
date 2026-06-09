@@ -1,107 +1,303 @@
-<!-- Copyright (c) Microsoft Corporation. All rights reserved. Licensed under the MIT License. -->
-<!-- This file shows how to design a first-run page that provides a welcome screen to the user about the features of the add-in. -->
-
 <!doctype html>
 <html>
   <head>
     <meta charset="UTF-8" />
     <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Contoso Task Pane Add-in</title>
+    <title>Mention Notifier</title>
 
-    <!-- Office JavaScript API -->
     <script
       type="text/javascript"
       src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"
     ></script>
 
-    <!-- For more information on Fluent UI, visit https://developer.microsoft.com/fluentui#/. -->
     <link
       rel="stylesheet"
       href="https://res-1.cdn.office.net/files/fabric-cdn-prod_20230815.002/office-ui-fabric-core/11.1.0/css/fabric.min.css"
     />
 
-    <!-- Template styles -->
-    <link href="taskpane.css" rel="stylesheet" type="text/css" />
-
     <style>
-      /* Quick responsive UI additions for the autocomplete list */
-      .sandbox-container {
-        padding: 15px;
+      /* Clean global container layout */
+      body {
+        margin: 0;
+        padding: 0;
+        background-color: #faf9f8;
+        font-family:
+          "Segoe UI",
+          -apple-system,
+          BlinkMacSystemFont,
+          Roboto,
+          Helvetica,
+          Arial,
+          sans-serif;
+        color: #323130;
       }
+
+      /* Compact, professional header bar matching Office theme */
+      .app-header {
+        padding: 16px 20px;
+        background-color: #ffffff;
+        border-bottom: 1px solid #edebe9;
+      }
+      .app-header h1 {
+        margin: 0;
+        font-weight: 600;
+        color: #0078d4;
+      }
+      .app-header p {
+        margin: 4px 0 0 0;
+        color: #605e5c;
+        font-weight: 400;
+      }
+
+      /* Main container layout padding */
+      .sandbox-container {
+        padding: 20px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      /* Polished Status Indicator Badge */
+      .status-badge {
+        background-color: #f3f2f1;
+        border-left: 4px solid #0078d4;
+        padding: 10px 14px;
+        border-radius: 2px;
+        margin: 0;
+        font-weight: 600;
+        color: #323130;
+        font-size: 13px;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+      }
+
+      /* Wrapper to strictly control absolute positioning context for dropdowns */
+      .input-wrapper {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field-label {
+        font-weight: 600;
+        font-size: 13px;
+        color: #323130;
+      }
+
+      /* Modernized Fluent UI styled Textarea */
       #commentInput {
         width: 100%;
-        padding: 8px;
+        height: 90px;
+        padding: 10px 12px;
         box-sizing: border-box;
-        margin-top: 10px;
         font-size: 14px;
-        border: 1px solid #a1a1a1;
+        font-family: inherit;
+        border: 1px solid #a19f9d;
+        border-radius: 2px;
+        background-color: #ffffff;
+        color: #323130;
+        resize: vertical;
+        transition:
+          border-color 0.2s ease,
+          box-shadow 0.2s ease;
       }
+      #commentInput:focus {
+        border-color: #0078d4;
+        outline: none;
+        box-shadow: 0 0 0 1px #0078d4;
+      }
+      #commentInput::placeholder {
+        color: #a19f9d;
+      }
+
+      /* Fluent Context Menu style shadow positioning for Autocomplete suggestions */
       #suggestionsBox {
-        border: 1px solid #ced4da;
-        border-top: none;
-        max-height: 160px;
+        position: absolute;
+        top: 100%;
+        left: 0;
+        width: 100%;
+        max-height: 180px;
         overflow-y: auto;
         background: #ffffff;
-        position: absolute;
-        width: calc(100% - 30px);
+        border: 1px solid #d2d0ce;
+        border-radius: 2px;
         z-index: 1000;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        box-shadow:
+          0 6.4px 14.4px 0 rgba(0, 0, 0, 0.132),
+          0 1.2px 3.6px 0 rgba(0, 0, 0, 0.108);
+        margin-top: 2px;
+        box-sizing: border-box;
       }
+
+      /* Clean items with explicit margins/colors */
       .suggestion-item {
-        padding: 8px 12px;
+        padding: 10px 14px;
         cursor: pointer;
-        color: #333333;
+        color: #323130;
         font-size: 13px;
-        border-bottom: 1px solid #f3f3f3;
+        border-bottom: 1px solid #f3f2f1;
+        transition: background-color 0.1s ease;
+      }
+      .suggestion-item:last-child {
+        border-bottom: none;
       }
       .suggestion-item:hover {
         background-color: #f3f2f1;
         color: #0078d4;
       }
-      #statusLog {
+
+      /* Fluent UI Primary Action Button design */
+      #addCommentBtn {
+        width: 100%;
+        padding: 10px 16px;
+        background-color: #0078d4;
+        color: #ffffff;
+        border: 1px solid transparent;
+        border-radius: 2px;
+        font-size: 14px;
         font-weight: 600;
-        color: #0078d4;
-        margin-bottom: 15px;
+        cursor: pointer;
+        transition:
+          background-color 0.15s ease,
+          box-shadow 0.15s ease;
+        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+      }
+      #addCommentBtn:hover {
+        background-color: #106ebe;
+        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+      }
+      #addCommentBtn:active {
+        background-color: #005a9e;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
+      }
+
+      /* Live Activity Status Indicator Badge */
+      .status-card {
+        background-color: #ffffff;
+        border-left: 4px solid #0078d4;
+        padding: 14px 16px;
+        border-radius: 4px;
+        margin: 0;
+        box-shadow:
+          0 1.6px 3.6px 0 rgba(0, 0, 0, 0.05),
+          0 0.3px 0.9px 0 rgba(0, 0, 0, 0.04);
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+
+      /* Small CSS spinner to show active processing background execution */
+      .spinner {
+        min-width: 16px;
+        min-height: 16px;
+        border: 2px solid #edebe9;
+        border-top: 2px solid #0078d4;
+        border-radius: 50%;
+        animation: spin 1s linear infinite;
+      }
+      @keyframes spin {
+        0% {
+          transform: rotate(0deg);
+        }
+        100% {
+          transform: rotate(360deg);
+        }
+      }
+
+      #statusLog {
+        margin: 0;
+        font-weight: 600;
+        color: #323130;
+        font-size: 13.5px;
+      }
+
+      /* Informational Guide / Monitor View Elements */
+      .info-box {
+        background-color: #ffffff;
+        border: 1px solid #f3f2f1;
+        border-radius: 4px;
+        padding: 16px;
+        box-shadow:
+          0 1.6px 3.6px 0 rgba(0, 0, 0, 0.05),
+          0 0.3px 0.9px 0 rgba(0, 0, 0, 0.04);
+      }
+      .info-title {
+        font-weight: 600;
         font-size: 13px;
+        color: #605e5c;
+        margin-bottom: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+      }
+      .activity-list {
+        margin: 0;
+        padding: 0 0 0 4px;
+        list-style: none;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+      .activity-item {
+        display: flex;
+        gap: 10px;
+        font-size: 13px;
+        color: #323130;
+        line-height: 1.4;
+      }
+      .activity-item i {
+        color: #107c41;
+        font-weight: bold;
+        margin-top: 2px;
       }
     </style>
   </head>
 
-  <body class="ms-font-m ms-welcome ms-Fabric">
-    <header class="ms-welcome__header ms-bgColor-neutralLighter">
-      <h1 class="ms-font-su">Mention Notifier</h1>
-      <p class="ms-font-m">Local Test Environment</p>
+  <body class="ms-Fabric">
+    <header class="app-header">
+      <h1 class="ms-font-xl">Mention Notifier</h1>
+      <p class="ms-font-xs">Local Test Environment</p>
     </header>
 
-    <main id="app-body" class="sandbox-container">
-      <div id="statusLog">Status: Initializing Sandbox...</div>
+    <!-- <main id="app-body" class="sandbox-container">
+      <p id="statusLog" class="status-badge">Status: Initialising...</p>
 
-      <label class="ms-font-m" style="font-weight: 600" for="commentInput"
-        >Test Taskpane Mentions Input:</label
-      >
-      <p class="ms-font-s" style="color: #666; margin: 4px 0 10px 0">
-        Type <b>@</b> inside the field below to query live profiles from <code>emp.json</code>.
-      </p>
+      <div class="input-wrapper">
+        <label for="commentInput" class="field-label">Draft Comment</label>
 
-      <div style="position: relative">
-        <input
+        <textarea
           id="commentInput"
-          type="text"
-          placeholder="Type @ followed by names..."
-          autocomplete="off"
-        />
+          placeholder="Type your comment here... Use @ to mention someone"
+        ></textarea>
 
         <div id="suggestionsBox" style="display: none"></div>
       </div>
 
-      <div style="margin-top: 30px; border-top: 1px solid #eaeaea; padding-top: 15px">
-        <h3 class="ms-font-l" style="margin: 0 0 8px 0;">Automated Background Activity</h3>
-        <p class="ms-font-s" style="color: #444; line-height: 1.4">
-          The add-in background loop scans for native Word comments every few seconds. When an
-          unhandled mention is discovered, tracking tags will be inserted and mock email profiles
-          will dump straight to your <b>Browser Developer Tools Console (F12)</b>.
-        </p>
+      <button id="addCommentBtn">Insert Native Comment</button>
+    </main> -->
+
+    <main id="app-body" class="sandbox-container">
+      <!-- <div class="status-card">
+        <div class="spinner"></div>
+        <p id="statusLog">Status: Initialising background loop...</p>
+      </div> -->
+
+      <div class="info-box">
+        <div class="info-title">Active Operations</div>
+        <ul class="activity-list">
+          <li class="activity-item">
+            <span class="ms-Icon ms-Icon--CheckMark"></span>
+            <div>Monitoring Word document comments pane for new unhandled <b>@mentions</b>.</div>
+          </li>
+          <li class="activity-item">
+            <span class="ms-Icon ms-Icon--CheckMark"></span>
+            <div>Resolving target recipient communication records from local directories.</div>
+          </li>
+          <li class="activity-item">
+            <span class="ms-Icon ms-Icon--CheckMark"></span>
+            <div>Injecting unique reference anchors to verify processed elements.</div>
+          </li>
+        </ul>
       </div>
     </main>
   </body>
