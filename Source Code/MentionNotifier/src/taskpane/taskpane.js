@@ -3,8 +3,22 @@
    ======================================================================== */
 
 let allUsersCache = []; // Global in-memory cache loaded from local JSON feed
-const processedIds = new Set();
 const emailCache = new Map();
+
+/**
+ * Stateful storage objects mapping parents and thread subsets.
+ * State elements survive refresh interval clean cycles seamlessly.
+ */
+const notifiedMentions = new Map(); // Structure: Map<commentId, Set<username>>
+let cachedDocumentComments = []; // Hierarchical collection tree storage array
+
+let editingCommentId = null; // Identifies targeted modification node
+let replyingToCommentId = null; // Identifies active parent response target
+let expandedCommentId = null; // Preserves open layout button drawers
+let deletingCommentId = null; // Preserves active delete confirmation prompt sub-state
+
+// CONCURRENCY LOCK: Prevents overlapping parallel executions from double-notifying
+let isScanning = false;
 
 const CONFIG = {
   adDomain: "RegDocs365",
@@ -17,19 +31,15 @@ Office.onReady(function (info) {
   if (info.host === Office.HostType.Word) {
     updateStatus("Connected to Word. Loading local sandbox directories...");
 
-    // 1. Preload user profiles from local/relative json file to avoid CORS blocks
     preloadLocalUsers();
-
-    // 2. Attach UI event handlers to input and submission controls
     initAutocomplete();
+    initManagementUI();
 
-    // 3. Kick off native document comment scan background loop
     setTimeout(scanAllComments, 2000);
     setInterval(scanAllComments, CONFIG.scanInterval);
   }
 });
 
-// Pre-fetches real user profiles from local emp.json file asset
 async function preloadLocalUsers() {
   try {
     if (emp && emp.feed && emp.feed.entry) {
@@ -44,7 +54,6 @@ async function preloadLocalUsers() {
   }
 }
 
-// Binds event listeners to capture typing patterns and the submit button action
 function initAutocomplete() {
   const input = document.getElementById("commentInput");
   const box = document.getElementById("suggestionsBox");
@@ -52,14 +61,12 @@ function initAutocomplete() {
 
   if (!input || !box) return;
 
-  // Handle autocomplete as user types
   input.addEventListener("input", function (e) {
     const text = e.target.value;
     const match = text.match(/@([\w.]*)$/);
 
     if (match) {
       const query = match[1].toLowerCase();
-
       const matchingUsers = allUsersCache.filter((u) => {
         const props = u.content && u.content.properties;
         if (!props) return false;
@@ -78,18 +85,27 @@ function initAutocomplete() {
     }
   });
 
-  // Close dropdown if user clicks away
   document.addEventListener("click", function (e) {
     if (e.target !== input) box.style.display = "none";
   });
 
-  // Attach submission click action to create the comment
   if (addBtn) {
-    addBtn.onclick = createNativeCommentFromTaskpane;
+    addBtn.onclick = handleFormSubmission;
   }
 }
 
-// Renders filtered matches dynamically in the taskpane frame
+function initManagementUI() {
+  const searchInput = document.getElementById("commentSearchInput");
+  const cancelBtn = document.getElementById("cancelFormStateBtn");
+
+  if (searchInput) {
+    searchInput.addEventListener("input", renderCommentsList);
+  }
+  if (cancelBtn) {
+    cancelBtn.onclick = resetFormState;
+  }
+}
+
 function renderSuggestions(users, startIdx, matchLen) {
   const box = document.getElementById("suggestionsBox");
   const input = document.getElementById("commentInput");
@@ -111,9 +127,6 @@ function renderSuggestions(users, startIdx, matchLen) {
 
     const div = document.createElement("div");
     div.className = "suggestion-item";
-    div.style.padding = "6px";
-    div.style.cursor = "pointer";
-    div.style.borderBottom = "1px solid #eee";
     div.innerText = `${title} (${email})`;
 
     div.onclick = function () {
@@ -132,40 +145,437 @@ function renderSuggestions(users, startIdx, matchLen) {
   });
 }
 
-/**
- * NEW FUNCTIONALITY: Programmatically creates a native comment card
- * at the user's current cursor location inside the active document text body.
- */
-async function createNativeCommentFromTaskpane() {
+async function handleFormSubmission() {
   const input = document.getElementById("commentInput");
   if (!input || !input.value.trim()) {
-    updateStatus("Cannot insert an empty comment.");
+    updateStatus("Cannot process empty text inputs.");
     return;
   }
 
-  const commentText = input.value.trim();
+  const textPayload = input.value.trim();
 
+  if (editingCommentId) {
+    await updateNativeCommentInWord(editingCommentId, textPayload);
+  } else if (replyingToCommentId) {
+    await createReplyToCommentInWord(replyingToCommentId, textPayload);
+  } else {
+    await createNativeCommentFromTaskpane(textPayload);
+  }
+}
+
+async function createNativeCommentFromTaskpane(commentText) {
+  const input = document.getElementById("commentInput");
   try {
     await Word.run(async (context) => {
       const selection = context.document.getSelection();
-
-      // Safety Fallback Check: insertComment requires WordApi 1.2+
       if (typeof selection.insertComment === "function") {
         selection.insertComment(commentText);
-        updateStatus("Native comment card generated.");
-        input.value = ""; // Clean input panel on success
+        updateStatus("Native comment generated.");
+        input.value = "";
       } else {
-        // If deployed to older OOS environments restricted strictly to WordApi 1.1
         selection.insertText(` [Comment: ${commentText}]`, "End");
         updateStatus("Inserted inline (Word API insertComment is unavailable).");
       }
-
       await context.sync();
     });
+    await scanAllComments();
   } catch (err) {
     console.error("[MentionNotifier] Failed to write native comment control:", err);
     updateStatus("Error writing comment to document.");
   }
+}
+
+async function createReplyToCommentInWord(parentCommentId, replyText) {
+  try {
+    updateStatus("Posting thread reply to document...");
+    await Word.run(async (context) => {
+      const comments = context.document.body.getComments();
+      comments.load("items/id");
+      await context.sync();
+
+      const parentComment = comments.items.find((c) => c.id === parentCommentId);
+      if (parentComment) {
+        parentComment.reply(replyText);
+        updateStatus("Reply appended successfully.");
+      } else {
+        updateStatus("Parent comment thread not located.");
+      }
+      await context.sync();
+    });
+
+    resetFormState();
+    await scanAllComments();
+  } catch (err) {
+    console.error("[MentionNotifier] Failed creating thread reply:", err);
+    updateStatus("Failed to submit thread reply.");
+  }
+}
+
+async function updateNativeCommentInWord(commentId, newText) {
+  try {
+    updateStatus("Updating comment on document thread...");
+    await Word.run(async (context) => {
+      const comments = context.document.body.getComments();
+      comments.load("items/id,items/content,items/replies/items/id,items/replies/items/content");
+      await context.sync();
+
+      let matchedNode = null;
+      for (const item of comments.items) {
+        if (item.id === commentId) {
+          matchedNode = item;
+          break;
+        }
+        if (item.replies && item.replies.items) {
+          for (const reply of item.replies.items) {
+            if (reply.id === commentId) {
+              matchedNode = reply;
+              break;
+            }
+          }
+        }
+        if (matchedNode) break;
+      }
+
+      if (matchedNode) {
+        const refRegex = /\[ref:([^\]]+)\]/;
+        const match = matchedNode.content.match(refRegex);
+        let absolutePayload = newText;
+
+        if (match && !newText.includes("[ref:")) {
+          absolutePayload = `${newText.trim()}  [ref:${match[1]}]`;
+        }
+
+        matchedNode.content = absolutePayload;
+        updateStatus("Comment modified successfully.");
+      } else {
+        updateStatus("Target comment node missing.");
+      }
+      await context.sync();
+    });
+
+    resetFormState();
+    await scanAllComments();
+  } catch (err) {
+    console.error("[MentionNotifier] Comment modification error:", err);
+    updateStatus("Failed to save comment edits.");
+  }
+}
+
+async function deleteNativeCommentFromWord(commentId) {
+  try {
+    updateStatus("Removing comment node from document tree...");
+    await Word.run(async (context) => {
+      const comments = context.document.body.getComments();
+      comments.load("items/id,items/replies/items/id");
+      await context.sync();
+
+      let matchedNode = null;
+      for (const item of comments.items) {
+        if (item.id === commentId) {
+          matchedNode = item;
+          break;
+        }
+        if (item.replies && item.replies.items) {
+          for (const reply of item.replies.items) {
+            if (reply.id === commentId) {
+              matchedNode = reply;
+              break;
+            }
+          }
+        }
+        if (matchedNode) break;
+      }
+
+      if (matchedNode) {
+        matchedNode.delete();
+        updateStatus("Comment element deleted.");
+      } else {
+        updateStatus("Comment already missing or dropped.");
+      }
+      await context.sync();
+    });
+
+    if (editingCommentId === commentId || replyingToCommentId === commentId) {
+      resetFormState();
+    }
+    await scanAllComments();
+  } catch (err) {
+    console.error("[MentionNotifier] Comment deletion error:", err);
+    updateStatus("Failed to execute deletion process.");
+  }
+}
+
+async function navigateToCommentInDoc(commentId) {
+  try {
+    updateStatus("Redirecting context window to comment anchor...");
+    await Word.run(async (context) => {
+      const comments = context.document.body.getComments();
+      comments.load("items/id,items/replies/items/id");
+      await context.sync();
+
+      let targetAnchorNode = null;
+      for (const item of comments.items) {
+        if (item.id === commentId) {
+          targetAnchorNode = item;
+          break;
+        }
+        if (item.replies && item.replies.items) {
+          const matchReply = item.replies.items.find((r) => r.id === commentId);
+          if (matchReply) {
+            targetAnchorNode = item;
+            break;
+          }
+        }
+      }
+
+      if (targetAnchorNode) {
+        const textRange = targetAnchorNode.getRange();
+        textRange.select("Select");
+        await context.sync();
+        updateStatus("Viewport aligned to comment area.");
+      } else {
+        updateStatus("Thread coordinates not found.");
+      }
+    });
+  } catch (err) {
+    console.error("[MentionNotifier] Navigation error:", err);
+    updateStatus("Navigation routing failure.");
+  }
+}
+
+function enterEditMode(commentId, cleanText) {
+  resetFormState();
+  editingCommentId = commentId;
+
+  const input = document.getElementById("commentInput");
+  const addBtn = document.getElementById("addCommentBtn");
+  const cancelBtn = document.getElementById("cancelFormStateBtn");
+  const label = document.getElementById("inputPanelLabel");
+
+  if (input) input.value = cleanText;
+  if (addBtn) addBtn.innerText = "Update Comment";
+  if (cancelBtn) cancelBtn.style.display = "block";
+  if (label) label.innerText = "Edit Active Comment Workspace";
+
+  updateStatus("Edit mode active.");
+  renderCommentsList();
+}
+
+function enterReplyMode(parentCommentId, authorLabel, refLabel) {
+  resetFormState();
+  replyingToCommentId = parentCommentId;
+
+  const addBtn = document.getElementById("addCommentBtn");
+  const cancelBtn = document.getElementById("cancelFormStateBtn");
+  const label = document.getElementById("inputPanelLabel");
+  const input = document.getElementById("commentInput");
+
+  if (addBtn) addBtn.innerText = "Submit Thread Reply";
+  if (cancelBtn) cancelBtn.style.display = "block";
+  if (label) label.innerText = `Reply to: ${authorLabel} (${refLabel})`;
+  if (input) {
+    input.value = "";
+    input.focus();
+  }
+
+  updateStatus("Reply mode active.");
+  renderCommentsList();
+}
+
+function resetFormState() {
+  editingCommentId = null;
+  replyingToCommentId = null;
+
+  const input = document.getElementById("commentInput");
+  const addBtn = document.getElementById("addCommentBtn");
+  const cancelBtn = document.getElementById("cancelFormStateBtn");
+  const label = document.getElementById("inputPanelLabel");
+
+  if (input) input.value = "";
+  if (addBtn) addBtn.innerText = "Insert Native Comment";
+  if (cancelBtn) cancelBtn.style.display = "none";
+  if (label) label.innerText = "Draft Comment";
+
+  renderCommentsList();
+}
+
+function formatCommentTimestamp(dateInput) {
+  if (!dateInput) return "Just now";
+  const dateObj = new Date(dateInput);
+  if (isNaN(dateObj.getTime())) return "Just now";
+
+  const monthNames = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December",
+  ];
+
+  const month = monthNames[dateObj.getMonth()];
+  const day = dateObj.getDate();
+  const year = dateObj.getFullYear();
+
+  let hours = dateObj.getHours();
+  const minutes = String(dateObj.getMinutes()).padStart(2, "0");
+
+  const ampm = hours >= 12 ? "PM" : "AM";
+
+  hours = hours % 12;
+  hours = hours ? hours : 12;
+
+  return `${month} ${day}, ${year} at ${hours}:${minutes} ${ampm}`;
+}
+
+function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
+  let stateClass = "";
+  if (editingCommentId === comment.id) stateClass = "active-edit";
+  else if (replyingToCommentId === comment.id) stateClass = "active-reply";
+
+  const refRegex = /\[ref:([^\]]+)\]/;
+  const refMatch = comment.content.match(refRegex);
+  const refNumber = refMatch ? refMatch[1] : parentRef || "PENDING";
+
+  const displayPayloadText = comment.content.replace(/\[ref:[^\]]+\]/g, "").trim();
+
+  const inlineHighlightedText = displayPayloadText.replace(
+    /@([\w][\w.]*[\w]|[\w])/g,
+    `<span style="color: #0078d4; font-weight: 600;">@$1</span>`
+  );
+
+  const isDrawerOpen = expandedCommentId === comment.id;
+  const isConfirmDeleteOpen = deletingCommentId === comment.id;
+  const timestampText = formatCommentTimestamp(comment.creationDate);
+
+  return `
+    <div class="comment-card ${stateClass}" data-id="${comment.id}" data-text="${encodeURIComponent(displayPayloadText)}" data-author="${encodeURIComponent(comment.author)}" data-ref="${refNumber}">
+      <div class="card-header-line">
+        <span><span class="author-name">${comment.author}</span> — <span class="ref-badge">${refNumber}</span></span>
+        ${isReplyNode ? `<span style="color: #666; font-size: 10px; background: #e1dfdd; padding: 1px 4px; border-radius:2px;">Reply</span>` : ""}
+      </div>
+      <div class="card-body-text">${inlineHighlightedText || "<em>[No text content]</em>"}</div>
+      <div class="card-timestamp-line">${timestampText}</div>
+      
+      <div class="card-action-drawer" style="display: ${isDrawerOpen ? "flex" : "none"};">
+        <div class="standard-actions-group" style="display: ${isConfirmDeleteOpen ? "none" : "flex"}; gap: 6px;">
+          ${!isReplyNode ? `<button class="action-btn btn-reply">Reply</button>` : ""}
+          <button class="action-btn btn-edit">Edit</button>
+          <button class="action-btn btn-delete">Delete</button>
+        </div>
+        <div class="inline-confirm-group" style="display: ${isConfirmDeleteOpen ? "flex" : "none"}; align-items: center; gap: 6px; font-size: 11px; color: #a80000; font-weight: 600;">
+          <span>Confirm?</span>
+          <button class="action-btn btn-delete action-delete-confirm">Yes</button>
+          <button class="action-btn btn-cancel action-delete-cancel">No</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderCommentsList() {
+  const container = document.getElementById("commentsListContainer");
+  if (!container) return;
+
+  const searchInput = document.getElementById("commentSearchInput");
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+
+  container.innerHTML = "";
+
+  const filteredTree = cachedDocumentComments.filter((parent) => {
+    const parentMatches =
+      parent.content.toLowerCase().includes(query) || parent.author.toLowerCase().includes(query);
+    const childMatches = parent.replies.some(
+      (reply) =>
+        reply.content.toLowerCase().includes(query) || reply.author.toLowerCase().includes(query)
+    );
+    return parentMatches || childMatches;
+  });
+
+  if (filteredTree.length === 0) {
+    container.innerHTML = `<div style="font-size: 12px; color: #605e5c; padding: 20px; text-align: center;">No active comments found.</div>`;
+    return;
+  }
+
+  filteredTree.forEach((thread) => {
+    const threadGroupWrapper = document.createElement("div");
+    threadGroupWrapper.className = "comment-card-thread-group";
+
+    const parentHTML = buildCommentNodeHTML(thread, false, null);
+    threadGroupWrapper.innerHTML = parentHTML;
+
+    thread.replies.forEach((reply) => {
+      const replyOuterFlexWrapper = document.createElement("div");
+      replyOuterFlexWrapper.className = "reply-nested-wrapper";
+
+      const parentRefNumber = thread.content.match(/\[ref:([^\]]+)\]/)?.[1] || "PENDING";
+
+      replyOuterFlexWrapper.innerHTML = `
+        <div class="thread-line-gutter"></div>
+        ${buildCommentNodeHTML(reply, true, parentRefNumber)}
+      `;
+      threadGroupWrapper.appendChild(replyOuterFlexWrapper);
+    });
+
+    threadGroupWrapper.querySelectorAll(".comment-card").forEach((cardNode) => {
+      const cardId = cardNode.getAttribute("data-id");
+      const cleanText = decodeURIComponent(cardNode.getAttribute("data-text"));
+      const authorLabel = decodeURIComponent(cardNode.getAttribute("data-author"));
+      const refLabel = cardNode.getAttribute("data-ref");
+
+      cardNode.addEventListener("click", function (e) {
+        if (e.target.tagName === "BUTTON") return;
+        expandedCommentId = expandedCommentId === cardId ? null : cardId;
+        deletingCommentId = null;
+        navigateToCommentInDoc(cardId);
+        renderCommentsList();
+      });
+
+      const replyBtn = cardNode.querySelector(".btn-reply");
+      if (replyBtn) {
+        replyBtn.onclick = function (e) {
+          e.stopPropagation();
+          enterReplyMode(cardId, authorLabel, refLabel);
+        };
+      }
+
+      cardNode.querySelector(".btn-edit").onclick = function (e) {
+        e.stopPropagation();
+        enterEditMode(cardId, cleanText);
+      };
+
+      cardNode.querySelector(".btn-delete").onclick = function (e) {
+        e.stopPropagation();
+        deletingCommentId = cardId;
+        renderCommentsList();
+      };
+
+      const cancelDel = cardNode.querySelector(".action-delete-cancel");
+      if (cancelDel) {
+        cancelDel.onclick = function (e) {
+          e.stopPropagation();
+          deletingCommentId = null;
+          renderCommentsList();
+        };
+      }
+
+      const confirmDel = cardNode.querySelector(".action-delete-confirm");
+      if (confirmDel) {
+        confirmDel.onclick = function (e) {
+          e.stopPropagation();
+          deleteNativeCommentFromWord(cardId);
+        };
+      }
+    });
+
+    container.appendChild(threadGroupWrapper);
+  });
 }
 
 function extractUsernameFromLogin(loginName) {
@@ -187,51 +597,130 @@ function updateStatus(msg) {
 async function scanAllComments() {
   if (Office.context.document.mode === Office.DocumentMode.ReadOnly) return;
 
+  // Concurrency check blocks overlapping interval loops from double-notifying
+  if (isScanning) return;
+  isScanning = true;
+
   try {
     await Word.run(async (context) => {
       const comments = context.document.body.getComments();
-      comments.load("items/id,items/content,items/resolved,items/author");
+      comments.load(
+        "items/id,items/content,items/resolved,items/authorName,items/creationDate,items/replies/items/id,items/replies/items/content,items/replies/items/resolved,items/replies/items/authorName,items/replies/items/creationDate"
+      );
       await context.sync();
+
+      const workingSyncCache = [];
 
       for (const comment of comments.items) {
         try {
           await processComment(comment, context);
+
+          let parsedAuthor = "Collaborator";
+          if (comment.authorName && String(comment.authorName).trim().length > 0) {
+            parsedAuthor = String(comment.authorName).trim();
+          }
+
+          if (!comment.resolved) {
+            const parentNode = {
+              id: comment.id,
+              content: comment.content || "",
+              author: parsedAuthor,
+              creationDate: comment.creationDate,
+              isReply: false,
+              replies: [],
+            };
+
+            if (comment.replies && comment.replies.items) {
+              for (const reply of comment.replies.items) {
+                await processComment(reply, context);
+
+                let parsedReplyAuthor = "Collaborator";
+                if (reply.authorName && String(reply.authorName).trim().length > 0) {
+                  parsedReplyAuthor = String(reply.authorName).trim();
+                }
+
+                if (!reply.resolved) {
+                  parentNode.replies.push({
+                    id: reply.id,
+                    content: reply.content || "",
+                    author: parsedReplyAuthor,
+                    creationDate: reply.creationDate,
+                    isReply: true,
+                  });
+                }
+              }
+            }
+
+            workingSyncCache.push(parentNode);
+          }
         } catch (err) {
-          console.error(`[MentionNotifier] Error processing comment ID ${comment.id}:`, err);
-          processedIds.add(comment.id);
+          console.error(
+            `[MentionNotifier] Error running background thread lookup element ${comment.id}:`,
+            err
+          );
         }
       }
+
+      // Batch all modifications together at the very end to prevent mid-loop index corruption
+      await context.sync();
+
+      cachedDocumentComments = workingSyncCache;
+      renderCommentsList();
     });
   } catch (err) {
     console.error("[MentionNotifier] Scanner daemon error stack:", err);
+  } finally {
+    isScanning = false; // Always clear lock context
   }
 }
 
 async function processComment(comment, context) {
-  if (comment.resolved || processedIds.has(comment.id)) return;
+  if (comment.resolved) return;
 
   const text = comment.content || "";
-  if (text.includes("[ref:")) {
-    processedIds.add(comment.id);
-    return;
-  }
-
   const mentionRegex = /@([\w][\w.]*[\w]|[\w])/g;
   const matches = [...text.matchAll(mentionRegex)];
-  if (matches.length === 0) return;
+  const currentMentions = [...new Set(matches.map((m) => m[1]))];
 
-  const uniqueId = Math.random().toString(36).substring(2, 8).toUpperCase();
-  const anchor = `[ref:${uniqueId}]`;
+  if (currentMentions.length === 0) return;
 
-  comment.content = text.trim() + "  " + anchor;
-  await context.sync();
+  const refRegex = /\[ref:([^\]]+)\]/;
+  const refMatch = text.match(refRegex);
+  let anchor = "";
+  let isNewOrMissingRef = false;
 
-  processedIds.add(comment.id);
-  const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
-  const authorName = comment.author || "A collaborator";
+  if (refMatch) {
+    anchor = `[ref:${refMatch[1]}]`;
+  } else {
+    const uniqueId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    anchor = `[ref:${uniqueId}]`;
+    isNewOrMissingRef = true;
+  }
 
-  for (const username of uniqueUsers) {
+  if (!notifiedMentions.has(comment.id)) {
+    notifiedMentions.set(comment.id, new Set());
+
+    if (!isNewOrMissingRef) {
+      currentMentions.forEach((username) => notifiedMentions.get(comment.id).add(username));
+      return;
+    }
+  }
+
+  const notifiedSet = notifiedMentions.get(comment.id);
+  const newMentions = currentMentions.filter((username) => !notifiedSet.has(username));
+
+  if (newMentions.length === 0 && !isNewOrMissingRef) return;
+
+  if (isNewOrMissingRef) {
+    comment.content = text.trim() + "  " + anchor;
+    // Internal context.sync() is removed from here. Handled atomically at loop completion.
+  }
+
+  const authorName = comment.authorName || "A collaborator";
+
+  for (const username of newMentions) {
     await sendNotificationSandbox(username, anchor, text, authorName);
+    notifiedSet.add(username);
   }
 }
 
@@ -246,32 +735,61 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
     .trim()
     .substring(0, 150);
 
-  const emailBody = [
-    "=========================================================================",
-    "MOCK EMAIL NOTIFICATION DISPATCH (SANDBOX TRACE LOG)",
-    "=========================================================================",
-    `To: ${email}`,
-    `Subject: Attention: You were mentioned in a comment - ${anchor}`,
-    "-------------------------------------------------------------------------",
-    "Hello,",
-    "",
-    `You have been mentioned by ${authorName} in a document comment.`,
-    "",
-    `Comment Snippet: "${commentPreview}"`,
-    "",
-    "👉 FULL DOCUMENT URL:",
-    cleanDocUrl,
-    "",
-    "👉 HOW TO FIND THIS COMMENT:",
-    "Please copy the reference tag below, open the document, and use the Find feature (Ctrl + F)",
-    "to look for this tag inside the document or its comments pane:",
-    anchor,
-    "",
-    "Note: This reference tag is uniquely generated to track and locate this comment transaction.",
-    "=========================================================================",
-  ].join("\n");
+  // Updated email template highlighting our interactive taskpane search dashboard
+  const emailBodyHTML = `
+    <div style="font-family: 'Segoe UI', Arial, sans-serif; color: #323130; max-width: 550px; line-height: 1.5; border: 1px solid #edebe9; padding: 20px; border-radius: 6px; background-color: #ffffff;">
+      <h2 style="color: #0078d4; margin-top: 0; font-weight: 600; font-size: 18px;">Document Mention Alert</h2>
+      <p>Hello,</p>
+      <p>You have been mentioned by <strong>${authorName}</strong> in a document comment thread.</p>
+      
+      <div style="background: #faf9f8; border-left: 4px solid #0078d4; padding: 12px 16px; margin: 15px 0; font-style: italic; border-radius: 2px;">
+        "${commentPreview}"
+      </div>
+      
+      <p style="margin-top: 20px;"><strong>👉 OPEN DOCUMENT:</strong><br>
+      <a href="${cleanDocUrl}" target="_blank" style="color: #0078d4; text-decoration: none; word-break: break-all;">${cleanDocUrl}</a></p>
+      
+      <p style="margin-top: 15px;"><strong>👉 HOW TO LOCATE THIS COMMENT:</strong><br>
+      Open the document and paste the unique reference token below directly into the <strong>Mention Notifier Add-in Search Bar</strong>. You can then click the comment card to automatically scroll and center the document focus exactly on this comment thread location:</p>
+      
+      <div style="background: #eff6fc; display: inline-block; padding: 6px 14px; font-weight: bold; border-radius: 4px; color: #0078d4; font-family: monospace; font-size: 14px; letter-spacing: 0.5px;">
+        ${anchor}
+      </div>
+      
+      <hr style="border: none; border-top: 1px solid #edebe9; margin-top: 25px; margin-bottom: 15px;" />
+      <p style="font-size: 11px; color: #8a8886; margin: 0;">This transaction notice was automatically transmitted. Please do not reply directly to this inbox.</p>
+    </div>
+  `;
 
-  console.log(emailBody);
+  try {
+    updateStatus("Transmitting email via Secure Backend Relay...");
+
+    // Replace with your active ngrok secure backend URL link if testing in Word Online
+    const BACKEND_URL = "http://localhost:5000/api/send-email";
+
+    const response = await fetch(BACKEND_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: email,
+        subject: `Attention: You were mentioned in a comment - ${anchor}`,
+        html: emailBodyHTML,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok && result.success) {
+      updateStatus(`Live email notification dispatched to: ${email}`);
+    } else {
+      throw new Error(result.error || `HTTP error server status: ${response.status}`);
+    }
+  } catch (err) {
+    console.error("[MentionNotifier] Secure Backend Relay post failed:", err);
+    updateStatus("Email notification delivery failure.");
+  }
 }
 
 async function resolveUserEmailLocal(username) {
