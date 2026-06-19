@@ -10,7 +10,7 @@
   <HighResolutionIconUrl DefaultValue="https://mennotifier.regdocs365.com/assets/icon-64.png"/>
   <SupportUrl DefaultValue="https://mennotifier.regdocs365.com/help"/>
   <AppDomains>
-       <AppDomain>https://r365-training.regdocs365.com</AppDomain>
+       <AppDomain>https://subs-tst.regdocs365.com</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Document"/>
