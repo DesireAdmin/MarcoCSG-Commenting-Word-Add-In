@@ -1,8 +1,0 @@
-# ngrok traffic policy: inject the skip-warning header on every inbound request
-# so Word's IE11 webview never receives the free-tier browser interstitial page.
-on_http_request:
-  - actions:
-      - type: add-headers
-        config:
-          headers:
-            ngrok-skip-browser-warning: "true"
