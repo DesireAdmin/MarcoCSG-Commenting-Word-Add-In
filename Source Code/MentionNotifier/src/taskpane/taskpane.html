@@ -256,11 +256,33 @@
   <body class="ms-Fabric">
     <header class="app-header">
       <h1 class="ms-font-xl">Mention Notifier</h1>
-      <p class="ms-font-xs">Local Test Environment</p>
+      <p class="ms-font-xs">Local Test Environment to simulate background processing</p>
     </header>
 
-    <!-- <main id="app-body" class="sandbox-container">
-      <p id="statusLog" class="status-badge">Status: Initialising...</p>
+    <main id="app-body" class="sandbox-container">
+      <div class="status-card">
+        <div class="spinner"></div>
+        <p id="statusLog">Status: Initialising background loop...</p>
+      </div>
+
+      <div class="info-box">
+        <div class="info-title">Word API Diagnostics</div>
+        <pre
+          id="diag"
+          style="
+            margin: 0;
+            white-space: pre-wrap;
+            font-family: Consolas, &quot;Courier New&quot;, monospace;
+            font-size: 12.5px;
+            line-height: 1.5;
+            color: #323130;
+          "
+        >
+Running diagnostics…</pre
+        >
+        <button id="testCommentBtn" style="margin-top: 12px">Run live comment API test</button>
+        <p id="testResult" style="margin: 8px 0 0 0; font-size: 12.5px; font-weight: 600"></p>
+      </div>
 
       <div class="input-wrapper">
         <label for="commentInput" class="field-label">Draft Comment</label>
@@ -274,13 +296,6 @@
       </div>
 
       <button id="addCommentBtn">Insert Native Comment</button>
-    </main> -->
-
-    <main id="app-body" class="sandbox-container">
-      <!-- <div class="status-card">
-        <div class="spinner"></div>
-        <p id="statusLog">Status: Initialising background loop...</p>
-      </div> -->
 
       <div class="info-box">
         <div class="info-title">Active Operations</div>

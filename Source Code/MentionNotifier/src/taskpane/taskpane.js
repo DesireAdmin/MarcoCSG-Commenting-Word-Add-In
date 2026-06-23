@@ -2507,7 +2507,7 @@ const emp = {
 
 let allUsersCache = []; // Global in-memory cache loaded from local JSON feed
 const processedIds = new Set();
-const emailCache = new Map();claude
+const emailCache = new Map();
 
 const CONFIG = {
   adDomain: "RegDocs365",
@@ -2515,6 +2515,10 @@ const CONFIG = {
 };
 
 Office.onReady(function (info) {
+  // Report environment/API support immediately, even before the Word checks,
+  // so we can tell whether the Comments API is usable in this host build.
+  runDiagnostics(info);
+
   if (info.host === Office.HostType.Word) {
     updateStatus("Connected to Word. Loading local sandbox directories...");
 
@@ -2524,11 +2528,101 @@ Office.onReady(function (info) {
     // 2. Attach UI event handlers to input and submission controls
     initAutocomplete();
 
-    // 3. Kick off native document comment scan background loop
+    // 3. Wire the manual "live comment API test" button
+    const testBtn = document.getElementById("testCommentBtn");
+    if (testBtn) testBtn.onclick = runLiveCommentTest;
+
+    // 4. Kick off native document comment scan background loop
     setTimeout(scanAllComments, 2000);
     setInterval(scanAllComments, CONFIG.scanInterval);
   }
 });
+
+// Writes host info + supported WordApi requirement sets into the diagnostics panel.
+// This is the authoritative way to know if the Comments API works in Word 2016.
+function runDiagnostics(info) {
+  const el = document.getElementById("diag");
+  if (!el) return;
+
+  const lines = [];
+
+  try {
+    const d = Office.context.diagnostics;
+    lines.push(`Host:     ${d.host}`);
+    lines.push(`Platform: ${d.platform}`);
+    lines.push(`Version:  ${d.version}`);
+  } catch (e) {
+    lines.push(`Host:     ${(info && info.host) || "unknown"}`);
+    lines.push("(Office.context.diagnostics not available in this build)");
+  }
+
+  lines.push("");
+  lines.push("WordApi requirement sets:");
+
+  const versions = ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"];
+  versions.forEach((v) => {
+    let supported = false;
+    try {
+      supported = Office.context.requirements.isSetSupported("WordApi", v);
+    } catch (e) {
+      supported = false;
+    }
+    lines.push(`  WordApi ${v}: ${supported ? "[YES]" : "[ no ]"}`);
+  });
+
+  let comments14 = false;
+  try {
+    comments14 = Office.context.requirements.isSetSupported("WordApi", "1.4");
+  } catch (e) {
+    comments14 = false;
+  }
+
+  lines.push("");
+  lines.push(
+    comments14
+      ? ">> Comments API (getComments / insertComment) IS supported here."
+      : ">> Comments API needs WordApi 1.4 - NOT supported in this build."
+  );
+
+  el.innerText = lines.join("\n");
+}
+
+// Actually exercises getComments + insertComment and reports the real outcome.
+async function runLiveCommentTest() {
+  const out = document.getElementById("testResult");
+  if (out) {
+    out.style.color = "#605e5c";
+    out.innerText = "Testing live Comments API...";
+  }
+
+  try {
+    await Word.run(async (context) => {
+      // 1. Read existing comments
+      const comments = context.document.body.getComments();
+      comments.load("items/id");
+      await context.sync();
+
+      const readCount = comments.items.length;
+
+      // 2. Insert a clearly-labelled test comment on a small inserted marker
+      const sel = context.document.getSelection();
+      const marker = sel.insertText("[API test] ", "End");
+      marker.insertComment("MentionNotifier API test - safe to delete.");
+      await context.sync();
+
+      if (out) {
+        out.style.color = "#107c41";
+        out.innerText = `PASS: read ${readCount} comment(s) and inserted a test comment successfully.`;
+      }
+    });
+  } catch (err) {
+    if (out) {
+      out.style.color = "#a4262c";
+      out.innerText = `FAIL: ${err.name || "Error"} (code ${err.code || "n/a"}) - ${err.message || err}`;
+    }
+    console.error("[MentionNotifier] Live comment API test failed:", err);
+  }
+}
 
 // Pre-fetches real user profiles from local emp.json file asset
 async function preloadLocalUsers() {
@@ -2691,8 +2785,17 @@ async function scanAllComments() {
   try {
     await Word.run(async (context) => {
       const comments = context.document.body.getComments();
-      comments.load("items/id,items/content,items/resolved,items/author");
+      console.log("🚀 ~ scanAllComments ~ context:", context);
+      console.log("🚀 ~ scanAllComments ~ context.document:", context.document);
+      console.log("🚀 ~ scanAllComments ~ context.document.body:", context.document.body);
+      console.log(
+        "🚀 ~ scanAllComments ~ context.document.body.getComments():",
+        context.document.body.getComments()
+      );
+      comments.load("items/id,items/content,items/resolved,items/authorName,items/authorEmail");
       await context.sync();
+
+      updateStatus(`Scan complete — ${comments.items.length} comment(s) found.`);
 
       for (const comment of comments.items) {
         try {
@@ -2729,7 +2832,7 @@ async function processComment(comment, context) {
 
   processedIds.add(comment.id);
   const uniqueUsers = [...new Set(matches.map((m) => m[1]))];
-  const authorName = comment.author || "A collaborator";
+  const authorName = comment.authorName || "A collaborator";
 
   for (const username of uniqueUsers) {
     await sendNotificationSandbox(username, anchor, text, authorName);
