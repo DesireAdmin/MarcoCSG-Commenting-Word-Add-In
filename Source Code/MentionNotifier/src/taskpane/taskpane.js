@@ -2524,6 +2524,7 @@ const CONFIG = {
   adDomain: "RegDocs365",
   scanInterval: 8000,
   siteUrl: "https://r365-training.regdocs365.com",
+  tstSiteUrl: "https://subs-tst.regdocs365.com",
 };
 
 Office.onReady(function (info) {
@@ -2597,52 +2598,64 @@ Office.onReady(function (info) {
 //   el.innerText = lines.join("\n");
 // }
 
-// Fetches the real site user directory from the SharePoint REST API.
-// Falls back to the bundled emp.json on any failure (CORS / auth / offline)
-// so the add-in keeps working while debugging.
-async function preloadSiteUsers() {
-  const endpoint = `${CONFIG.siteUrl}/_api/web/siteusers`;
+// Reusable: GET {site}/_api/web/siteusers, normalized to the emp.json shape
+// (content.properties.<Field>.__text) so the rest of the code works unchanged.
+async function fetchSiteUsers(site) {
+  const res = await fetch(`${site}/_api/web/siteusers`, {
+    method: "GET",
+    headers: { Accept: "application/json;odata=verbose" },
+    // Send the user's SharePoint auth cookies with the request.
+    credentials: "include",
+  });
 
-  try {
-    updateStatus("Fetching site users from SharePoint...");
+  if (!res.ok) {
+    throw new Error(`HTTP ${res.status} ${res.statusText}`);
+  }
 
-    const res = await fetch(endpoint, {
-      method: "GET",
-      headers: {
-        Accept: "application/json;odata=verbose",
+  const data = await res.json();
+  const results = (data && data.d && data.d.results) || [];
+
+  return results.map((u) => ({
+    content: {
+      properties: {
+        Id: { __text: String(u.Id) },
+        Title: { __text: u.Title || "" },
+        Email: { __text: u.Email || "" },
+        LoginName: { __text: u.LoginName || "" },
+        PrincipalType: { __text: String(u.PrincipalType) },
       },
-      // Send the user's SharePoint auth cookies with the request.
-      credentials: "include",
-    });
+    },
+  }));
+}
 
-    if (!res.ok) {
-      throw new Error(`HTTP ${res.status} ${res.statusText}`);
+// 1st priority: load the REAL user directory from the training site.
+// If that fails: (a) run a TEST-ONLY call against tstSiteUrl and log the
+// result/error (its data is NEVER used), then (b) fall back to static emp.json
+// for actual app functionality — exactly like before.
+async function preloadSiteUsers() {
+  try {
+    updateStatus("Fetching site users from SharePoint (training)...");
+    allUsersCache = await fetchSiteUsers(CONFIG.siteUrl);
+    updateStatus(`Operational (${allUsersCache.length} users loaded from training site).`);
+    return;
+  } catch (err) {
+    console.error("[MentionNotifier] Training siteusers fetch failed:", err);
+
+    // (a) TEST-ONLY diagnostic against the TST site. Log only — do not use.
+    try {
+      const tstUsers = await fetchSiteUsers(CONFIG.tstSiteUrl);
+      console.log(
+        `[MentionNotifier][TST TEST] siteusers OK on ${CONFIG.tstSiteUrl} — ${tstUsers.length} user(s):`,
+        tstUsers
+      );
+    } catch (tstErr) {
+      console.error(
+        `[MentionNotifier][TST TEST] siteusers FAILED on ${CONFIG.tstSiteUrl}:`,
+        tstErr
+      );
     }
 
-    const data = await res.json();
-    const results = (data && data.d && data.d.results) || [];
-
-    // Normalize the SharePoint JSON into the same shape the rest of the code
-    // already expects (mirrors emp.json: content.properties.<Field>.__text),
-    // so initAutocomplete / resolveUserEmailLocal keep working unchanged.
-    allUsersCache = results.map((u) => ({
-      content: {
-        properties: {
-          Id: { __text: String(u.Id) },
-          Title: { __text: u.Title || "" },
-          Email: { __text: u.Email || "" },
-          LoginName: { __text: u.LoginName || "" },
-          PrincipalType: { __text: String(u.PrincipalType) },
-        },
-      },
-    }));
-
-    updateStatus(`Operational (${allUsersCache.length} users loaded from SharePoint).`);
-  } catch (err) {
-    console.error("[MentionNotifier] Failed to fetch site users from SharePoint:", err);
-    updateStatus(`Live fetch failed (${err.message}). Falling back to bundled emp.json...`);
-
-    // Fallback so @mention autocomplete still works while diagnosing the fetch.
+    // (b) Real fallback stays the bundled static emp.json.
     if (emp && emp.feed && emp.feed.entry) {
       allUsersCache = emp.feed.entry;
       updateStatus(
@@ -3376,15 +3389,32 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   `;
   const subject = `Attention: You were mentioned in a comment - ${anchor}`;
 
-  // Try to actually send the email as the current user via the SharePoint
-  // REST SendEmail utility. On CORS / auth / any error: log the full body to
-  // the console and flash a "not sent" status for 4 seconds.
+  // 1st priority: send as the current user via the SharePoint REST SendEmail
+  // utility on the training site (contextinfo + SendEmail both target it).
   try {
     updateStatus(`Sending mention email to: ${email}...`);
-    await sendEmailViaSharePoint(email, subject, emailBodyHTML);
+    await sendEmailViaSharePoint(CONFIG.siteUrl, email, subject, emailBodyHTML);
     updateStatus(`Mention email sent to: ${email}`);
+    return;
   } catch (err) {
-    console.error("[MentionNotifier] Email send failed:", err);
+    console.error("[MentionNotifier] Email send failed on training site:", err);
+
+    // TEST-ONLY: retry the same flow against the TST site so we can check
+    // whether contextinfo + SendEmail work there. Log result/error only.
+    try {
+      await sendEmailViaSharePoint(CONFIG.tstSiteUrl, email, subject, emailBodyHTML);
+      console.log(
+        `[MentionNotifier][TST TEST] Email send OK via ${CONFIG.tstSiteUrl} to ${email}`
+      );
+    } catch (tstErr) {
+      console.error(
+        `[MentionNotifier][TST TEST] Email send FAILED via ${CONFIG.tstSiteUrl}:`,
+        tstErr
+      );
+    }
+
+    // On CORS / auth / any error: log the full intended body and flash a
+    // "not sent" status for 4 seconds.
     console.log("📧 Email was NOT sent. Intended message body below:", {
       to: email,
       subject,
@@ -3400,9 +3430,7 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
 // without a CORS block, i.e. served same-origin as CONFIG.siteUrl (or via a
 // CORS-enabled proxy). Note: SendEmail only delivers to recipients inside the
 // same SharePoint tenant.
-async function sendEmailViaSharePoint(to, subject, htmlBody) {
-  const site = CONFIG.siteUrl;
-
+async function sendEmailViaSharePoint(site, to, subject, htmlBody) {
   // 1. Acquire a form digest token (required for any SharePoint POST write).
   const ctxRes = await fetch(`${site}/_api/contextinfo`, {
     method: "POST",
