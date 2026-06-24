@@ -17,11 +17,15 @@
     />
 
     <style>
-      /* Clean global container layout */
+      /* Enforce absolute boundary constraints to eliminate macro window scrolling */
+      html,
       body {
         margin: 0;
         padding: 0;
-        background-color: #faf9f8;
+        height: 100%;
+        width: 100%;
+        overflow: hidden;
+        background-color: #f3f2f1;
         font-family:
           "Segoe UI",
           -apple-system,
@@ -33,287 +37,344 @@
         color: #323130;
       }
 
-      /* Compact, professional header bar matching Office theme */
-      .app-header {
-        padding: 16px 20px;
+      /* Region 1: Fixed App Header Panel */
+      .fixed-app-header {
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 50px;
         background-color: #ffffff;
         border-bottom: 1px solid #edebe9;
+        padding: 10px 16px;
+        box-sizing: border-box;
+        z-index: 10;
       }
-      .app-header h1 {
+      .fixed-app-header h1 {
         margin: 0;
+        font-size: 15px;
         font-weight: 600;
         color: #0078d4;
       }
-      .app-header p {
-        margin: 4px 0 0 0;
+      #statusLog {
+        margin: 2px 0 0 0;
         color: #605e5c;
-        font-weight: 400;
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
-      /* Main container layout padding */
-      .sandbox-container {
-        padding: 20px;
-        display: flex;
-        flex-direction: column;
-        gap: 16px;
+      /* Region 2: Fixed Top Filter Input Pane */
+      .fixed-search-bar-panel {
+        position: absolute;
+        top: 50px;
+        left: 0;
+        right: 0;
+        height: 54px;
+        background-color: #ffffff;
+        border-bottom: 1px solid #d2d0ce;
+        padding: 8px 16px;
+        box-sizing: border-box;
+        z-index: 10;
       }
-
-      /* Polished Status Indicator Badge */
-      .status-badge {
-        background-color: #f3f2f1;
-        border-left: 4px solid #0078d4;
-        padding: 10px 14px;
-        border-radius: 2px;
-        margin: 0;
-        font-weight: 600;
-        color: #323130;
-        font-size: 13px;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
-      }
-
-      /* Wrapper to strictly control absolute positioning context for dropdowns */
       .input-wrapper {
         position: relative;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+      }
+      .search-input-field {
+        width: 100%;
+        padding: 6px 10px;
+        box-sizing: border-box;
+        border: 1px solid #a19f9d;
+        border-radius: 4px;
+        font-size: 13px;
+        background-color: #faf9f8;
+        transition: all 0.15s ease;
+      }
+      .search-input-field:focus {
+        border-color: #0078d4;
+        background-color: #ffffff;
+        outline: none;
+        box-shadow: 0 0 0 1px #0078d4;
       }
 
+      /* Region 3: INDEPENDENTLY SCROLLABLE INTERMEDIATE WORKSPACE CONTAINER */
+      .comments-scrollable-workspace {
+        position: absolute;
+        top: 104px; /* Header (50px) + Search Area (54px) */
+        bottom: 190px; /* Clearance for Bottom drafting panel */
+        left: 0;
+        right: 0;
+        overflow-y: auto;
+        padding: 14px 16px;
+        box-sizing: border-box;
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      /* Region 4: Fixed Bottom-Docked Comment Drafting Workspace Panel */
+      .fixed-bottom-drafting-panel {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        right: 0;
+        height: 190px;
+        background-color: #ffffff;
+        border-top: 1px solid #d2d0ce;
+        padding: 12px 16px;
+        box-sizing: border-box;
+        z-index: 10;
+        box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.06);
+      }
       .field-label {
         font-weight: 600;
-        font-size: 13px;
-        color: #323130;
+        font-size: 11px;
+        color: #605e5c;
+        text-transform: uppercase;
+        letter-spacing: 0.3px;
+        margin-bottom: 4px;
       }
-
-      /* Modernized Fluent UI styled Textarea */
       #commentInput {
         width: 100%;
-        height: 90px;
-        padding: 10px 12px;
+        height: 110px;
+        padding: 6px 10px;
         box-sizing: border-box;
-        font-size: 14px;
+        font-size: 13px;
         font-family: inherit;
         border: 1px solid #a19f9d;
-        border-radius: 2px;
-        background-color: #ffffff;
-        color: #323130;
-        resize: vertical;
-        transition:
-          border-color 0.2s ease,
-          box-shadow 0.2s ease;
+        border-radius: 4px;
+        resize: none;
+        transition: border-color 0.15s ease;
       }
       #commentInput:focus {
         border-color: #0078d4;
         outline: none;
-        box-shadow: 0 0 0 1px #0078d4;
-      }
-      #commentInput::placeholder {
-        color: #a19f9d;
       }
 
-      /* Fluent Context Menu style shadow positioning for Autocomplete suggestions */
       #suggestionsBox {
         position: absolute;
-        top: 100%;
+        bottom: 100%; /* Expands upward to keep clear of bottom bezel */
         left: 0;
         width: 100%;
-        max-height: 180px;
+        max-height: 140px;
         overflow-y: auto;
         background: #ffffff;
         border: 1px solid #d2d0ce;
-        border-radius: 2px;
+        border-radius: 4px;
         z-index: 1000;
-        box-shadow:
-          0 6.4px 14.4px 0 rgba(0, 0, 0, 0.132),
-          0 1.2px 3.6px 0 rgba(0, 0, 0, 0.108);
-        margin-top: 2px;
+        box-shadow: 0 -4px 12px rgba(0, 0, 0, 0.12);
+        margin-bottom: 4px;
         box-sizing: border-box;
       }
-
-      /* Clean items with explicit margins/colors */
       .suggestion-item {
-        padding: 10px 14px;
+        padding: 8px 12px;
         cursor: pointer;
-        color: #323130;
-        font-size: 13px;
+        font-size: 12px;
         border-bottom: 1px solid #f3f2f1;
-        transition: background-color 0.1s ease;
-      }
-      .suggestion-item:last-child {
-        border-bottom: none;
       }
       .suggestion-item:hover {
         background-color: #f3f2f1;
         color: #0078d4;
       }
 
-      /* Fluent UI Primary Action Button design */
-      #addCommentBtn {
+      .action-row-container {
+        display: flex;
+        gap: 6px;
+        margin-top: 8px;
         width: 100%;
-        padding: 10px 16px;
+      }
+      #addCommentBtn {
+        flex-grow: 1;
+        padding: 8px 16px;
         background-color: #0078d4;
         color: #ffffff;
-        border: 1px solid transparent;
-        border-radius: 2px;
-        font-size: 14px;
+        border: none;
+        border-radius: 4px;
+        font-size: 13px;
         font-weight: 600;
         cursor: pointer;
-        transition:
-          background-color 0.15s ease,
-          box-shadow 0.15s ease;
-        box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+        transition: background-color 0.1s ease;
       }
       #addCommentBtn:hover {
         background-color: #106ebe;
-        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
       }
-      #addCommentBtn:active {
-        background-color: #005a9e;
-        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-      }
-
-      /* Live Activity Status Indicator Badge */
-      .status-card {
-        background-color: #ffffff;
-        border-left: 4px solid #0078d4;
-        padding: 14px 16px;
-        border-radius: 4px;
-        margin: 0;
-        box-shadow:
-          0 1.6px 3.6px 0 rgba(0, 0, 0, 0.05),
-          0 0.3px 0.9px 0 rgba(0, 0, 0, 0.04);
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }
-
-      /* Small CSS spinner to show active processing background execution */
-      .spinner {
-        min-width: 16px;
-        min-height: 16px;
-        border: 2px solid #edebe9;
-        border-top: 2px solid #0078d4;
-        border-radius: 50%;
-        animation: spin 1s linear infinite;
-      }
-      @keyframes spin {
-        0% {
-          transform: rotate(0deg);
-        }
-        100% {
-          transform: rotate(360deg);
-        }
-      }
-
-      #statusLog {
-        margin: 0;
-        font-weight: 600;
+      #cancelFormStateBtn {
+        padding: 8px 12px;
+        background-color: #f3f2f1;
         color: #323130;
-        font-size: 13.5px;
+        border: 1px solid #a19f9d;
+        border-radius: 4px;
+        font-size: 13px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      #cancelFormStateBtn:hover {
+        background-color: #edebe9;
       }
 
-      /* Informational Guide / Monitor View Elements */
-      .info-box {
+      /* Modern Fluent UI Thread Card Layout Overhauls */
+      .comment-card-thread-group {
         background-color: #ffffff;
-        border: 1px solid #f3f2f1;
-        border-radius: 4px;
-        padding: 16px;
-        box-shadow:
-          0 1.6px 3.6px 0 rgba(0, 0, 0, 0.05),
-          0 0.3px 0.9px 0 rgba(0, 0, 0, 0.04);
-      }
-      .info-title {
-        font-weight: 600;
-        font-size: 13px;
-        color: #605e5c;
-        margin-bottom: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-      }
-      .activity-list {
-        margin: 0;
-        padding: 0 0 0 4px;
-        list-style: none;
+        border: 1px solid #edebe9;
+        border-radius: 6px;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
         display: flex;
         flex-direction: column;
-        gap: 12px;
       }
-      .activity-item {
+
+      .comment-card {
+        padding: 12px;
+        border-left: 4px solid transparent;
         display: flex;
-        gap: 10px;
+        flex-direction: column;
+        gap: 4px;
+        transition: background-color 0.15s ease;
+      }
+      .comment-card:hover {
+        background-color: #faf9f8;
+      }
+      .comment-card.active-edit {
+        border-left-color: #0078d4;
+        background-color: #f3f9fe;
+      }
+      .comment-card.active-reply {
+        border-left-color: #107c41;
+        background-color: #f0fdf4;
+      }
+
+      /* Nested Threaded Responses Styling */
+      .reply-nested-wrapper {
+        border-top: 1px solid #f3f2f1;
+        background-color: #faf9f8;
+        display: flex;
+      }
+      .thread-line-gutter {
+        width: 16px;
+        margin-left: 14px;
+        border-left: 2px solid #d2d0ce;
+        flex-shrink: 0;
+      }
+      .reply-nested-wrapper .comment-card {
+        flex-grow: 1;
+        padding: 10px 12px 10px 4px;
+      }
+
+      .card-header-line {
+        font-size: 12px;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+      }
+      .author-name {
+        font-weight: 600;
+        color: #201f1e;
+      }
+      .ref-badge {
+        font-size: 10px;
+        font-weight: 600;
+        color: #605e5c;
+        background-color: #f3f2f1;
+        padding: 1px 5px;
+        border-radius: 3px;
+      }
+
+      .card-body-text {
         font-size: 13px;
         color: #323130;
-        line-height: 1.4;
+        word-break: break-word;
+        line-height: 1.45;
       }
-      .activity-item i {
-        color: #107c41;
-        font-weight: bold;
-        margin-top: 2px;
+      .card-timestamp-line {
+        font-size: 11px;
+        color: #8a8886;
+      }
+
+      /* Context Action drawers */
+      .card-action-drawer {
+        display: flex;
+        justify-content: flex-end;
+        gap: 6px;
+        margin-top: 6px;
+        border-top: 1px solid #edebe9;
+        padding-top: 6px;
+      }
+      .action-btn {
+        padding: 4px 10px;
+        font-size: 11px;
+        border: none;
+        border-radius: 4px;
+        cursor: pointer;
+        font-weight: 600;
+      }
+      .btn-reply {
+        background: #107c41;
+        color: white;
+      }
+      .btn-reply:hover {
+        background: #0b592e;
+      }
+      .btn-edit {
+        background: #0078d4;
+        color: white;
+      }
+      .btn-edit:hover {
+        background: #106ebe;
+      }
+      .btn-delete {
+        background: #a80000;
+        color: white;
+      }
+      .btn-delete:hover {
+        background: #820000;
+      }
+      .btn-cancel {
+        background: #f3f2f1;
+        color: #323130;
+        border: 1px solid #a19f9d;
       }
     </style>
   </head>
 
-  <body class="ms-Fabric">
-    <header class="app-header">
-      <h1 class="ms-font-xl">Mention Notifier</h1>
-      <p class="ms-font-xs">Local Test Environment to simulate background processing</p>
+  <body>
+    <header class="fixed-app-header">
+      <h1>Mention Notifier</h1>
+      <p id="statusLog">Status: Connecting to document model...</p>
     </header>
 
-    <main id="app-body" class="sandbox-container">
-      <div class="status-card">
-        <div class="spinner"></div>
-        <p id="statusLog">Status: Initialising background loop...</p>
-      </div>
-
-      <div class="info-box">
-        <div class="info-title">Word API Diagnostics</div>
-        <pre
-          id="diag"
-          style="
-            margin: 0;
-            white-space: pre-wrap;
-            font-family: Consolas, &quot;Courier New&quot;, monospace;
-            font-size: 12.5px;
-            line-height: 1.5;
-            color: #323130;
-          "
-        >
-Running diagnostics…</pre
-        >
-        <button id="testCommentBtn" style="margin-top: 12px">Run live comment API test</button>
-        <p id="testResult" style="margin: 8px 0 0 0; font-size: 12.5px; font-weight: 600"></p>
-      </div>
-
+    <section class="fixed-search-bar-panel">
       <div class="input-wrapper">
-        <label for="commentInput" class="field-label">Draft Comment</label>
+        <input
+          type="text"
+          id="commentSearchInput"
+          class="search-input-field"
+          placeholder="Search text, authors, or references..."
+        />
+      </div>
+    </section>
 
+    <main class="comments-scrollable-workspace" id="commentsListContainer">
+      <div style="font-size: 12px; color: #605e5c; text-align: center; padding-top: 30px">
+        Loading structural document context layout...
+      </div>
+    </main>
+
+    <footer class="fixed-bottom-drafting-panel">
+      <div class="input-wrapper">
+        <label id="inputPanelLabel" for="commentInput" class="field-label">Draft Comment</label>
         <textarea
           id="commentInput"
-          placeholder="Type your comment here... Use @ to mention someone"
+          placeholder="Type your message... Add @ to alert users"
         ></textarea>
-
         <div id="suggestionsBox" style="display: none"></div>
       </div>
 
-      <button id="addCommentBtn">Insert Native Comment</button>
-
-      <div class="info-box">
-        <div class="info-title">Active Operations</div>
-        <ul class="activity-list">
-          <li class="activity-item">
-            <span class="ms-Icon ms-Icon--CheckMark"></span>
-            <div>Monitoring Word document comments pane for new unhandled <b>@mentions</b>.</div>
-          </li>
-          <li class="activity-item">
-            <span class="ms-Icon ms-Icon--CheckMark"></span>
-            <div>Resolving target recipient communication records from local directories.</div>
-          </li>
-          <li class="activity-item">
-            <span class="ms-Icon ms-Icon--CheckMark"></span>
-            <div>Injecting unique reference anchors to verify processed elements.</div>
-          </li>
-        </ul>
+      <div class="action-row-container">
+        <button id="addCommentBtn">Insert Native Comment</button>
+        <button id="cancelFormStateBtn" style="display: none">Cancel</button>
       </div>
-    </main>
+    </footer>
   </body>
 </html>
