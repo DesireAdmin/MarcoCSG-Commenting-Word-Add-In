@@ -2634,21 +2634,25 @@ async function fetchSiteUsers(site) {
 // for actual app functionality — exactly like before.
 async function preloadSiteUsers() {
   try {
-    updateStatus("Fetching site users from SharePoint (training)...");
+    updateStatus("Fetching site users from SharePoint (training site)...");
     allUsersCache = await fetchSiteUsers(CONFIG.siteUrl);
     updateStatus(`Operational (${allUsersCache.length} users loaded from training site).`);
     return;
   } catch (err) {
+    updateStatus(`Error fetching site users from training site).`);
     console.error("[MentionNotifier] Training siteusers fetch failed:", err);
 
     // (a) TEST-ONLY diagnostic against the TST site. Log only — do not use.
     try {
-      const tstUsers = await fetchSiteUsers(CONFIG.tstSiteUrl);
+      updateStatus("Fetching site users from SharePoint (tst test site)...");
+      const allUsersCache = await fetchSiteUsers(CONFIG.tstSiteUrl);
+      updateStatus(`Operational (${allUsersCache.length} users loaded from tst test site).`);
       console.log(
-        `[MentionNotifier][TST TEST] siteusers OK on ${CONFIG.tstSiteUrl} — ${tstUsers.length} user(s):`,
-        tstUsers
+        `[MentionNotifier][TST TEST] siteusers OK on ${CONFIG.tstSiteUrl} — ${allUsersCache.length} user(s):`,
+        allUsersCache
       );
     } catch (tstErr) {
+      updateStatus(`Error fetching site users from tst test site).`);
       console.error(
         `[MentionNotifier][TST TEST] siteusers FAILED on ${CONFIG.tstSiteUrl}:`,
         tstErr
@@ -3392,21 +3396,23 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   // 1st priority: send as the current user via the SharePoint REST SendEmail
   // utility on the training site (contextinfo + SendEmail both target it).
   try {
-    updateStatus(`Sending mention email to: ${email}...`);
+    updateStatus(`Sending mention email via ${CONFIG.siteUrl} to: ${email}...`);
     await sendEmailViaSharePoint(CONFIG.siteUrl, email, subject, emailBodyHTML);
-    updateStatus(`Mention email sent to: ${email}`);
+    updateStatus(`Mention email sent via ${CONFIG.siteUrl} to: ${email}`);
     return;
   } catch (err) {
+    updateStatus(`Error sending mention email via ${CONFIG.siteUrl}.`);
     console.error("[MentionNotifier] Email send failed on training site:", err);
 
     // TEST-ONLY: retry the same flow against the TST site so we can check
     // whether contextinfo + SendEmail work there. Log result/error only.
     try {
+      updateStatus(`Sending mention email via ${CONFIG.tstSiteUrl} to: ${email}...`);
       await sendEmailViaSharePoint(CONFIG.tstSiteUrl, email, subject, emailBodyHTML);
-      console.log(
-        `[MentionNotifier][TST TEST] Email send OK via ${CONFIG.tstSiteUrl} to ${email}`
-      );
+      updateStatus(`Mention email sent via ${CONFIG.tstSiteUrl} to: ${email}`);
+      console.log(`[MentionNotifier][TST TEST] Email send OK via ${CONFIG.tstSiteUrl} to ${email}`);
     } catch (tstErr) {
+      updateStatus(`Error sending mention email via ${CONFIG.tstSiteUrl}.`);
       console.error(
         `[MentionNotifier][TST TEST] Email send FAILED via ${CONFIG.tstSiteUrl}:`,
         tstErr
@@ -3415,7 +3421,36 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
 
     // On CORS / auth / any error: log the full intended body and flash a
     // "not sent" status for 4 seconds.
-    console.log("📧 Email was NOT sent. Intended message body below:", {
+    try {
+      updateStatus("Transmitting email via internal Secure Backend Relay...");
+      // Replace with your active ngrok secure backend URL link if testing in Word Online
+      const BACKEND_URL = "http://localhost:5000/api/send-email";
+
+      const response = await fetch(BACKEND_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          to: email,
+          subject: `Attention: You were mentioned in a comment - ${anchor}`,
+          html: emailBodyHTML,
+        }),
+      });
+
+      const result = await response.json();
+
+      if (response.ok && result.success) {
+        updateStatus(`Live email notification dispatched to: ${email}`);
+      } else {
+        throw new Error(result.error || `HTTP error server status: ${response.status}`);
+      }
+    } catch (err) {
+      console.error("[MentionNotifier] Secure Backend Relay post failed:", err);
+      updateStatus("Email notification delivery failure.");
+    }
+
+    console.log("📧 Email was NOT sent. written intended static message body below:", {
       to: email,
       subject,
       html: emailBodyHTML,
