@@ -43,12 +43,14 @@
         top: 0;
         left: 0;
         right: 0;
-        height: 50px;
+        height: 40px;
         background-color: #ffffff;
         border-bottom: 1px solid #edebe9;
         padding: 10px 16px;
         box-sizing: border-box;
         z-index: 10;
+        display: flex;
+        align-items: center;
       }
       .fixed-app-header h1 {
         margin: 0;
@@ -56,19 +58,11 @@
         font-weight: 600;
         color: #0078d4;
       }
-      #statusLog {
-        margin: 2px 0 0 0;
-        color: #605e5c;
-        font-size: 11px;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
 
       /* Region 2: Fixed Top Filter Input Pane */
       .fixed-search-bar-panel {
         position: absolute;
-        top: 50px;
+        top: 40px;
         left: 0;
         right: 0;
         height: 54px;
@@ -103,8 +97,8 @@
       /* Region 3: INDEPENDENTLY SCROLLABLE INTERMEDIATE WORKSPACE CONTAINER */
       .comments-scrollable-workspace {
         position: absolute;
-        top: 104px; /* Header (50px) + Search Area (54px) */
-        bottom: 190px; /* Clearance for Bottom drafting panel */
+        top: 94px; /* Header (40px) + Search Area (54px) */
+        bottom: 220px; /* Clearance for Bottom drafting panel */
         left: 0;
         right: 0;
         overflow-y: auto;
@@ -121,7 +115,7 @@
         bottom: 0;
         left: 0;
         right: 0;
-        height: 190px;
+        height: 220px;
         background-color: #ffffff;
         border-top: 1px solid #d2d0ce;
         padding: 12px 16px;
@@ -213,6 +207,18 @@
       }
       #cancelFormStateBtn:hover {
         background-color: #edebe9;
+      }
+
+      /* Persistent status line, docked under the primary action row */
+      #statusLog {
+        margin: 8px 0 0 0;
+        padding-top: 6px;
+        border-top: 1px solid #edebe9;
+        color: #605e5c;
+        font-size: 11px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       /* Modern Fluent UI Thread Card Layout Overhauls */
@@ -341,7 +347,6 @@
   <body>
     <header class="fixed-app-header">
       <h1>Mention Notifier</h1>
-      <p id="statusLog">Status: Connecting to document model...</p>
     </header>
 
     <section class="fixed-search-bar-panel">
@@ -375,6 +380,8 @@
         <button id="addCommentBtn">Insert Native Comment</button>
         <button id="cancelFormStateBtn" style="display: none">Cancel</button>
       </div>
+
+      <p id="statusLog">Status: Connecting to document model...</p>
     </footer>
   </body>
 </html>
