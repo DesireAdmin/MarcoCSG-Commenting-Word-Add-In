@@ -73,6 +73,11 @@ module.exports = async (env, options) => {
               }
             },
           },
+          {
+            from: "web.config",
+            to: "web.config",
+            noErrorOnMissing: true,
+          },
         ],
       }),
       new HtmlWebpackPlugin({

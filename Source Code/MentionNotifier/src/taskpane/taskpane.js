@@ -2521,54 +2521,12 @@ let deletingCommentId = null; // Preserves active delete confirmation prompt sub
 let isScanning = false;
 
 const CONFIG = {
-  adDomain: "spse01",
   scanInterval: 8000,
-  siteUrl: "http://spse01:8080/sites/desire",
-  // Service account probed in Stages 3 & 4 below (via HTTP Basic auth) while
-  // we track down the 401 unauthorized. Fill in real credentials to test.
-  serviceAccount: {
-    username: "MARCOS\\Administrator",
-    password: "Desire@123",
-  },
+  // Same-origin ("") once deployed under IISNode alongside the add-in files.
+  // For local dev-server testing (webpack serve on :3000) point this at the
+  // relay's own address, e.g. "http://localhost:5000".
+  relayBaseUrl: "",
 };
-
-// The 4 live-API auth permutations probed against CONFIG.siteUrl, in order,
-// before falling back to the final static/relay stage (Stage 5). Each stage's
-// `label` is written to both updateStatus() and console.log() so the exact
-// combination that succeeds/fails is visible without opening devtools.
-const AUTH_STAGES = [
-  {
-    label: "Stage 1/5 (credentials: include)",
-    credentialsMode: "include",
-    useServiceAccount: false,
-  },
-  {
-    label: "Stage 2/5 (credentials: omit)",
-    credentialsMode: "omit",
-    useServiceAccount: false,
-  },
-  {
-    label: "Stage 3/5 (credentials: include + service account)",
-    credentialsMode: "include",
-    useServiceAccount: true,
-  },
-  {
-    label: "Stage 4/5 (credentials: omit + service account)",
-    credentialsMode: "omit",
-    useServiceAccount: true,
-  },
-];
-
-// Merges the Authorization header (service account, Basic auth) into a set
-// of request headers when the given stage calls for it.
-function buildStageHeaders(stage, baseHeaders) {
-  const headers = { ...baseHeaders };
-  if (stage.useServiceAccount) {
-    const { username, password } = CONFIG.serviceAccount;
-    headers["Authorization"] = "Basic " + btoa(`${username}:${password}`);
-  }
-  return headers;
-}
 
 Office.onReady(function (info) {
   // Report environment/API support immediately, even before the Word checks,
@@ -2641,23 +2599,11 @@ Office.onReady(function (info) {
 //   el.innerText = lines.join("\n");
 // }
 
-// Reusable: GET {site}/_api/web/siteusers, normalized to the emp.json shape
-// (content.properties.<Field>.__text) so the rest of the code works unchanged.
-async function fetchSiteUsers(site, stage) {
-  const res = await fetch(`${site}/_api/web/siteusers`, {
-    method: "GET",
-    headers: buildStageHeaders(stage, { Accept: "application/json;odata=verbose" ,}),
-    credentials: stage.credentialsMode,
-  });
-
-  if (!res.ok) {
-    throw new Error(`HTTP ${res.status} ${res.statusText}`);
-  }
-
-  const data = await res.json();
-  const results = (data && data.d && data.d.results) || [];
-
-  return results.map((u) => ({
+// Normalizes a raw siteusers REST result array to the emp.json shape
+// (content.properties.<Field>.__text) so the rest of the code works unchanged
+// regardless of whether the data came from the relay or a direct fetch.
+function normalizeSiteUsers(results) {
+  return (results || []).map((u) => ({
     content: {
       properties: {
         Id: { __text: String(u.Id) },
@@ -2670,42 +2616,55 @@ async function fetchSiteUsers(site, stage) {
   }));
 }
 
-// Loads the real user directory from CONFIG.siteUrl, working through the 4
-// auth permutations in AUTH_STAGES in order (Stages 1-4). If none of those
-// succeed, Stage 5 falls back to the bundled static emp.json so the add-in
-// still has a working user directory.
-async function preloadSiteUsers() {
-  for (const stage of AUTH_STAGES) {
+// GET /api/siteusers from the backend NTLM relay — authenticates server-side
+// with the service account (no browser CORS/claims issues).
+async function fetchSiteUsersViaRelay() {
+  const res = await fetch(`${CONFIG.relayBaseUrl}/api/siteusers`);
+
+  if (!res.ok) {
+    let detail = "";
     try {
-      updateStatus(`${stage.label}: fetching site users...`);
-      console.log(`[MentionNotifier] ${stage.label}: GET ${CONFIG.siteUrl}/_api/web/siteusers`);
-      allUsersCache = await fetchSiteUsers(CONFIG.siteUrl, stage);
-      updateStatus(`${stage.label}: SUCCESS — ${allUsersCache.length} user(s) loaded.`);
-      console.log(
-        `[MentionNotifier] ${stage.label}: SUCCESS — ${allUsersCache.length} user(s) loaded.`
-      );
-      return;
-    } catch (err) {
-      updateStatus(`${stage.label}: FAILED — ${err.message}`);
-      console.error(`[MentionNotifier] ${stage.label}: FAILED —`, err);
+      const e = await res.json();
+      detail = e && e.error ? ` — ${e.error}` : "";
+    } catch (ignore) {
+      /* response had no JSON body */
     }
+    throw new Error(`HTTP ${res.status}${detail}`);
   }
 
-  // Stage 5/5: static offline fallback (unchanged from before).
-  updateStatus("Stage 5/5 (static emp.json): loading offline directory...");
+  const data = await res.json();
+  return normalizeSiteUsers(data && data.users);
+}
+
+// Loads the real user directory. Stage 1 is the backend NTLM relay. If it's
+// unreachable, Stage 2 falls back to the bundled static emp.json so the
+// add-in still has a working user directory.
+async function preloadSiteUsers() {
+  try {
+    updateStatus("Stage 1/2 (backend NTLM relay): fetching site users...");
+    console.log(`[MentionNotifier] Stage 1/2 (backend NTLM relay): GET ${CONFIG.relayBaseUrl}/api/siteusers`);
+    allUsersCache = await fetchSiteUsersViaRelay();
+    updateStatus(`Stage 1/2 (backend NTLM relay): SUCCESS — ${allUsersCache.length} user(s) loaded.`);
+    console.log(
+      `[MentionNotifier] Stage 1/2 (backend NTLM relay): SUCCESS — ${allUsersCache.length} user(s) loaded.`
+    );
+    return;
+  } catch (err) {
+    updateStatus(`Stage 1/2 (backend NTLM relay): FAILED — ${err.message}`);
+    console.error("[MentionNotifier] Stage 1/2 (backend NTLM relay): FAILED —", err);
+  }
+
+  // Stage 2: static offline fallback.
+  updateStatus("Stage 2/2 (static emp.json): loading offline directory...");
   if (emp && emp.feed && emp.feed.entry) {
     allUsersCache = emp.feed.entry;
-    updateStatus(
-      `Stage 5/5 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`
-    );
+    updateStatus(`Stage 2/2 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`);
     console.log(
-      `[MentionNotifier] Stage 5/5 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`
+      `[MentionNotifier] Stage 2/2 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`
     );
   } else {
-    updateStatus("Stage 5/5 (static emp.json): FAILED — no fallback data available.");
-    console.error(
-      "[MentionNotifier] Stage 5/5 (static emp.json): FAILED — emp.json missing/empty."
-    );
+    updateStatus("Stage 2/2 (static emp.json): FAILED — no fallback data available.");
+    console.error("[MentionNotifier] Stage 2/2 (static emp.json): FAILED — emp.json missing/empty.");
   }
 }
 
@@ -3394,9 +3353,19 @@ async function processComment(comment, context) {
 }
 
 async function sendNotificationSandbox(username, anchor, originalText, authorName) {
+  const email = await resolveUserEmailLocal(username);
+
+  if (!email) {
+    updateStatus(`Email not sent — "${username}" has no email address on file in SharePoint.`);
+    console.error(
+      `[MentionNotifier] No email address found for "${username}" in SharePoint siteusers data — notification not sent.`
+    );
+    flashStatus(`Email not sent — ${username} has no email address on file.`, 4000);
+    return;
+  }
+
   const docUrl = Office.context.document.url;
   const cleanDocUrl = buildCleanDocUrl(docUrl);
-  const email = await resolveUserEmailLocal(username);
 
   const commentPreview = originalText
     .replace(/@[\w.]+/g, "")
@@ -3431,120 +3400,53 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   `;
   const subject = `Attention: You were mentioned in a comment - ${anchor}`;
 
-  // Stages 1-4: probe the SharePoint REST SendEmail utility against the
-  // single configured site with each credentials/service-account permutation
-  // in AUTH_STAGES, in order.
-  for (const stage of AUTH_STAGES) {
-    try {
-      updateStatus(`${stage.label}: sending email to ${email}...`);
-      console.log(
-        `[MentionNotifier] ${stage.label}: sending email to ${email} via ${CONFIG.siteUrl}`
-      );
-      await sendEmailViaSharePoint(CONFIG.siteUrl, email, subject, emailBodyHTML, stage);
-      updateStatus(`${stage.label}: SUCCESS — email sent to ${email}.`);
-      console.log(`[MentionNotifier] ${stage.label}: SUCCESS — email sent to ${email}.`);
-      return;
-    } catch (err) {
-      updateStatus(`${stage.label}: FAILED — ${err.message}`);
-      console.error(`[MentionNotifier] ${stage.label}: FAILED —`, err);
-    }
-  }
-
-  // Stage 5/5: unchanged final fallback — Secure Backend Relay.
+  // Stage 1: backend NTLM relay — sends via the SharePoint REST SendEmail
+  // utility, authenticated server-side with the service account.
   try {
-    updateStatus("Stage 5/5 (Secure Backend Relay): transmitting email...");
-    console.log(`[MentionNotifier] Stage 5/5 (Secure Backend Relay): POST for ${email}`);
-    // Replace with your active ngrok secure backend URL link if testing in Word Online
-    const BACKEND_URL = "http://localhost:5000/api/send-email";
-
-    const response = await fetch(BACKEND_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        to: email,
-        subject,
-        html: emailBodyHTML,
-      }),
-    });
-
-    const result = await response.json();
-
-    if (response.ok && result.success) {
-      updateStatus(`Stage 5/5 (Secure Backend Relay): SUCCESS — email dispatched to ${email}.`);
-      console.log(
-        `[MentionNotifier] Stage 5/5 (Secure Backend Relay): SUCCESS — email sent to ${email}.`
-      );
-      return;
-    }
-    throw new Error(result.error || `HTTP error server status: ${response.status}`);
+    updateStatus(`Stage 1/2 (backend NTLM relay): sending email to ${email}...`);
+    console.log(`[MentionNotifier] Stage 1/2 (backend NTLM relay): POST ${CONFIG.relayBaseUrl}/api/send-email`);
+    await sendEmailViaRelay(email, subject, emailBodyHTML);
+    updateStatus(`Stage 1/2 (backend NTLM relay): SUCCESS — email sent to ${email}.`);
+    console.log(`[MentionNotifier] Stage 1/2 (backend NTLM relay): SUCCESS — email sent to ${email}.`);
+    return;
   } catch (err) {
-    console.error("[MentionNotifier] Stage 5/5 (Secure Backend Relay): FAILED —", err);
-    updateStatus("Stage 5/5 (Secure Backend Relay): FAILED — all delivery methods exhausted.");
+    updateStatus(`Stage 1/2 (backend NTLM relay): FAILED — ${err.message}`);
+    console.error("[MentionNotifier] Stage 1/2 (backend NTLM relay): FAILED —", err);
   }
 
-  console.log("📧 Email was NOT sent. written intended static message body below:", {
+  // Stage 2: relay unreachable — log the intended message instead of sending it.
+  console.log("📧 Email was NOT sent. Intended message body:", {
     to: email,
     subject,
     html: emailBodyHTML,
   });
-  flashStatus(`Email not sent to ${email} — all stages failed.`, 4000);
+  updateStatus("Stage 2/2 (static log): relay unreachable — email not sent.");
+  flashStatus(`Email not sent to ${email} — relay unreachable.`, 4000);
 }
 
-// Sends an email as the current authenticated user using the SharePoint REST
-// SendEmail utility (no backend / SMTP server needed — SMTP cannot be done
-// from browser JS directly). Requires the page to reach the SharePoint web
-// without a CORS block, i.e. served same-origin as CONFIG.siteUrl (or via a
-// CORS-enabled proxy). Note: SendEmail only delivers to recipients inside the
-// same SharePoint tenant.
-async function sendEmailViaSharePoint(site, to, subject, htmlBody, stage) {
-  // 1. Acquire a form digest token (required for any SharePoint POST write).
-  const ctxRes = await fetch(`${site}/_api/contextinfo`, {
+// POST /api/send-email to the backend NTLM relay — authenticates server-side
+// with the service account.
+async function sendEmailViaRelay(to, subject, html) {
+  const response = await fetch(`${CONFIG.relayBaseUrl}/api/send-email`, {
     method: "POST",
-    headers: buildStageHeaders(stage, { Accept: "application/json;odata=verbose" }),
-    credentials: stage.credentialsMode,
-  });
-  if (!ctxRes.ok) throw new Error(`contextinfo HTTP ${ctxRes.status}`);
-  const ctx = await ctxRes.json();
-  const digest = ctx.d.GetContextWebInformation.FormDigestValue;
-
-  // 2. Send the mail as the current user.
-  const res = await fetch(`${site}/_api/SP.Utilities.Utility.SendEmail`, {
-    method: "POST",
-    headers: buildStageHeaders(stage, {
-      Accept: "application/json;odata=verbose",
-      "Content-Type": "application/json;odata=verbose",
-      "X-RequestDigest": digest,
-    }),
-    credentials: stage.credentialsMode,
-    body: JSON.stringify({
-      properties: {
-        __metadata: { type: "SP.Utilities.EmailProperties" },
-        To: { results: [to] },
-        Subject: subject,
-        Body: htmlBody,
-      },
-    }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ to, subject, html }),
   });
 
-  if (!res.ok) {
-    let detail = "";
-    try {
-      const e = await res.json();
-      detail = (e && e.error && e.error.message && e.error.message.value) || "";
-    } catch (ignore) {
-      /* response had no JSON body */
-    }
-    throw new Error(`SendEmail HTTP ${res.status} ${detail}`.trim());
+  const result = await response.json();
+  if (!response.ok || !result.success) {
+    throw new Error(result.error || `HTTP error server status: ${response.status}`);
   }
 }
 
+// Resolves a tagged user's email strictly from the SharePoint siteusers data
+// (allUsersCache). Returns null if the user has no email on file — callers
+// must not send to a fabricated address.
 async function resolveUserEmailLocal(username) {
   if (emailCache.has(username)) return emailCache.get(username);
 
   const lowerUser = username.toLowerCase();
-  const foundUser = allUsersCache.find((u) => {
+  const candidates = allUsersCache.filter((u) => {
     const props = u.content && u.content.properties;
     if (!props) return false;
 
@@ -3552,21 +3454,26 @@ async function resolveUserEmailLocal(username) {
     const title = props.Title && props.Title.__text ? props.Title.__text : "";
 
     const cleanLogin = extractUsernameFromLogin(loginName).toLowerCase();
-    const cleanTitle = title.toLowerCase();
+    const cleanTitle = extractUsernameFromLogin(title).toLowerCase();
 
     return cleanLogin === lowerUser || cleanTitle === lowerUser;
   });
 
-  let email = `${username}@domain.local`;
-  if (
-    foundUser &&
-    foundUser.content &&
-    foundUser.content.properties &&
-    foundUser.content.properties.Email &&
-    foundUser.content.properties.Email.__text
-  ) {
-    email = foundUser.content.properties.Email.__text;
-  }
+  // SharePoint can carry more than one user record for the same person (e.g.
+  // a legacy non-claims duplicate from a Central Admin web app policy grant,
+  // alongside the real claims-based record). Prefer whichever match actually
+  // has an email on file instead of just taking the first one.
+  const foundUser =
+    candidates.find((u) => u.content.properties.Email && u.content.properties.Email.__text) ||
+    candidates[0];
+
+  const email =
+    (foundUser &&
+      foundUser.content &&
+      foundUser.content.properties &&
+      foundUser.content.properties.Email &&
+      foundUser.content.properties.Email.__text) ||
+    null;
 
   emailCache.set(username, email);
   return email;
