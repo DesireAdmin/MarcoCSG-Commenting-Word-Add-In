@@ -6,17 +6,17 @@
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="MentionNotifier"/>
   <Description DefaultValue="A template to get started."/>
-  <IconUrl DefaultValue="https://mennotifier.regdocs365.com/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="https://mennotifier.regdocs365.com/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="https://mennotifier.regdocs365.com/help"/>
+  <IconUrl DefaultValue="http://spse01:8088/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="http://spse01:8088/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="http://spse01:8088/help"/>
   <AppDomains>
-       <AppDomain>https://subs-tst.regdocs365.com</AppDomain>
+       <AppDomain>https://spse01:8443</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Document"/>
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="https://mennotifier.regdocs365.com/taskpane.html"/>
+    <SourceLocation DefaultValue="http://spse01:8088/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
   <VersionOverrides xmlns="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="VersionOverridesV1_0">
@@ -62,14 +62,14 @@
     </Hosts>
     <Resources>
       <bt:Images>
-        <bt:Image id="Icon.16x16" DefaultValue="https://mennotifier.regdocs365.com/assets/icon-16.png"/>
-        <bt:Image id="Icon.32x32" DefaultValue="https://mennotifier.regdocs365.com/assets/icon-32.png"/>
-        <bt:Image id="Icon.80x80" DefaultValue="https://mennotifier.regdocs365.com/assets/icon-80.png"/>
+        <bt:Image id="Icon.16x16" DefaultValue="http://spse01:8088/assets/icon-16.png"/>
+        <bt:Image id="Icon.32x32" DefaultValue="http://spse01:8088/assets/icon-32.png"/>
+        <bt:Image id="Icon.80x80" DefaultValue="http://spse01:8088/assets/icon-80.png"/>
       </bt:Images>
       <bt:Urls>
         <bt:Url id="GetStarted.LearnMoreUrl" DefaultValue="https://go.microsoft.com/fwlink/?LinkId=276812"/>
-        <bt:Url id="Commands.Url" DefaultValue="https://mennotifier.regdocs365.com/commands.html"/>
-        <bt:Url id="Taskpane.Url" DefaultValue="https://mennotifier.regdocs365.com/taskpane.html"/>
+        <bt:Url id="Commands.Url" DefaultValue="http://spse01:8088/commands.html"/>
+        <bt:Url id="Taskpane.Url" DefaultValue="http://spse01:8088/taskpane.html"/>
       </bt:Urls>
       <bt:ShortStrings>
         <bt:String id="GetStarted.Title" DefaultValue="Get started with your sample add-in!"/>

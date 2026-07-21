@@ -2521,11 +2521,54 @@ let deletingCommentId = null; // Preserves active delete confirmation prompt sub
 let isScanning = false;
 
 const CONFIG = {
-  adDomain: "RegDocs365",
+  adDomain: "spse01",
   scanInterval: 8000,
-  siteUrl: "https://r365-training.regdocs365.com",
-  tstSiteUrl: "https://subs-tst.regdocs365.com",
+  siteUrl: "http://spse01:8080/sites/desire",
+  // Service account probed in Stages 3 & 4 below (via HTTP Basic auth) while
+  // we track down the 401 unauthorized. Fill in real credentials to test.
+  serviceAccount: {
+    username: "MARCOS\\Administrator",
+    password: "Desire@123",
+  },
 };
+
+// The 4 live-API auth permutations probed against CONFIG.siteUrl, in order,
+// before falling back to the final static/relay stage (Stage 5). Each stage's
+// `label` is written to both updateStatus() and console.log() so the exact
+// combination that succeeds/fails is visible without opening devtools.
+const AUTH_STAGES = [
+  {
+    label: "Stage 1/5 (credentials: include)",
+    credentialsMode: "include",
+    useServiceAccount: false,
+  },
+  {
+    label: "Stage 2/5 (credentials: omit)",
+    credentialsMode: "omit",
+    useServiceAccount: false,
+  },
+  {
+    label: "Stage 3/5 (credentials: include + service account)",
+    credentialsMode: "include",
+    useServiceAccount: true,
+  },
+  {
+    label: "Stage 4/5 (credentials: omit + service account)",
+    credentialsMode: "omit",
+    useServiceAccount: true,
+  },
+];
+
+// Merges the Authorization header (service account, Basic auth) into a set
+// of request headers when the given stage calls for it.
+function buildStageHeaders(stage, baseHeaders) {
+  const headers = { ...baseHeaders };
+  if (stage.useServiceAccount) {
+    const { username, password } = CONFIG.serviceAccount;
+    headers["Authorization"] = "Basic " + btoa(`${username}:${password}`);
+  }
+  return headers;
+}
 
 Office.onReady(function (info) {
   // Report environment/API support immediately, even before the Word checks,
@@ -2600,12 +2643,11 @@ Office.onReady(function (info) {
 
 // Reusable: GET {site}/_api/web/siteusers, normalized to the emp.json shape
 // (content.properties.<Field>.__text) so the rest of the code works unchanged.
-async function fetchSiteUsers(site) {
+async function fetchSiteUsers(site, stage) {
   const res = await fetch(`${site}/_api/web/siteusers`, {
     method: "GET",
-    headers: { Accept: "application/json;odata=verbose" },
-    // Send the user's SharePoint auth cookies with the request.
-    credentials: "include",
+    headers: buildStageHeaders(stage, { Accept: "application/json;odata=verbose" ,}),
+    credentials: stage.credentialsMode,
   });
 
   if (!res.ok) {
@@ -2628,46 +2670,42 @@ async function fetchSiteUsers(site) {
   }));
 }
 
-// 1st priority: load the REAL user directory from the training site.
-// If that fails: (a) run a TEST-ONLY call against tstSiteUrl and log the
-// result/error (its data is NEVER used), then (b) fall back to static emp.json
-// for actual app functionality — exactly like before.
+// Loads the real user directory from CONFIG.siteUrl, working through the 4
+// auth permutations in AUTH_STAGES in order (Stages 1-4). If none of those
+// succeed, Stage 5 falls back to the bundled static emp.json so the add-in
+// still has a working user directory.
 async function preloadSiteUsers() {
-  try {
-    updateStatus("Fetching site users from SharePoint (training site)...");
-    allUsersCache = await fetchSiteUsers(CONFIG.siteUrl);
-    updateStatus(`Operational (${allUsersCache.length} users loaded from training site).`);
-    return;
-  } catch (err) {
-    updateStatus(`Error fetching site users from training site).`);
-    console.error("[MentionNotifier] Training siteusers fetch failed:", err);
-
-    // (a) TEST-ONLY diagnostic against the TST site. Log only — do not use.
+  for (const stage of AUTH_STAGES) {
     try {
-      updateStatus("Fetching site users from SharePoint (tst test site)...");
-      const allUsersCache = await fetchSiteUsers(CONFIG.tstSiteUrl);
-      updateStatus(`Operational (${allUsersCache.length} users loaded from tst test site).`);
+      updateStatus(`${stage.label}: fetching site users...`);
+      console.log(`[MentionNotifier] ${stage.label}: GET ${CONFIG.siteUrl}/_api/web/siteusers`);
+      allUsersCache = await fetchSiteUsers(CONFIG.siteUrl, stage);
+      updateStatus(`${stage.label}: SUCCESS — ${allUsersCache.length} user(s) loaded.`);
       console.log(
-        `[MentionNotifier][TST TEST] siteusers OK on ${CONFIG.tstSiteUrl} — ${allUsersCache.length} user(s):`,
-        allUsersCache
+        `[MentionNotifier] ${stage.label}: SUCCESS — ${allUsersCache.length} user(s) loaded.`
       );
-    } catch (tstErr) {
-      updateStatus(`Error fetching site users from tst test site).`);
-      console.error(
-        `[MentionNotifier][TST TEST] siteusers FAILED on ${CONFIG.tstSiteUrl}:`,
-        tstErr
-      );
+      return;
+    } catch (err) {
+      updateStatus(`${stage.label}: FAILED — ${err.message}`);
+      console.error(`[MentionNotifier] ${stage.label}: FAILED —`, err);
     }
+  }
 
-    // (b) Real fallback stays the bundled static emp.json.
-    if (emp && emp.feed && emp.feed.entry) {
-      allUsersCache = emp.feed.entry;
-      updateStatus(
-        `Offline mode: ${allUsersCache.length} static profiles loaded from emp.json (live fetch failed).`
-      );
-    } else {
-      updateStatus("Failed to load users from SharePoint and no local fallback available.");
-    }
+  // Stage 5/5: static offline fallback (unchanged from before).
+  updateStatus("Stage 5/5 (static emp.json): loading offline directory...");
+  if (emp && emp.feed && emp.feed.entry) {
+    allUsersCache = emp.feed.entry;
+    updateStatus(
+      `Stage 5/5 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`
+    );
+    console.log(
+      `[MentionNotifier] Stage 5/5 (static emp.json): SUCCESS — ${allUsersCache.length} profile(s) loaded.`
+    );
+  } else {
+    updateStatus("Stage 5/5 (static emp.json): FAILED — no fallback data available.");
+    console.error(
+      "[MentionNotifier] Stage 5/5 (static emp.json): FAILED — emp.json missing/empty."
+    );
   }
 }
 
@@ -3393,70 +3431,65 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   `;
   const subject = `Attention: You were mentioned in a comment - ${anchor}`;
 
-  // 1st priority: send as the current user via the SharePoint REST SendEmail
-  // utility on the training site (contextinfo + SendEmail both target it).
-  try {
-    updateStatus(`Sending mention email via ${CONFIG.siteUrl} to: ${email}...`);
-    await sendEmailViaSharePoint(CONFIG.siteUrl, email, subject, emailBodyHTML);
-    updateStatus(`Mention email sent via ${CONFIG.siteUrl} to: ${email}`);
-    return;
-  } catch (err) {
-    updateStatus(`Error sending mention email via ${CONFIG.siteUrl}.`);
-    console.error("[MentionNotifier] Email send failed on training site:", err);
-
-    // TEST-ONLY: retry the same flow against the TST site so we can check
-    // whether contextinfo + SendEmail work there. Log result/error only.
+  // Stages 1-4: probe the SharePoint REST SendEmail utility against the
+  // single configured site with each credentials/service-account permutation
+  // in AUTH_STAGES, in order.
+  for (const stage of AUTH_STAGES) {
     try {
-      updateStatus(`Sending mention email via ${CONFIG.tstSiteUrl} to: ${email}...`);
-      await sendEmailViaSharePoint(CONFIG.tstSiteUrl, email, subject, emailBodyHTML);
-      updateStatus(`Mention email sent via ${CONFIG.tstSiteUrl} to: ${email}`);
-      console.log(`[MentionNotifier][TST TEST] Email send OK via ${CONFIG.tstSiteUrl} to ${email}`);
-    } catch (tstErr) {
-      updateStatus(`Error sending mention email via ${CONFIG.tstSiteUrl}.`);
-      console.error(
-        `[MentionNotifier][TST TEST] Email send FAILED via ${CONFIG.tstSiteUrl}:`,
-        tstErr
+      updateStatus(`${stage.label}: sending email to ${email}...`);
+      console.log(
+        `[MentionNotifier] ${stage.label}: sending email to ${email} via ${CONFIG.siteUrl}`
       );
-    }
-
-    // On CORS / auth / any error: log the full intended body and flash a
-    // "not sent" status for 4 seconds.
-    try {
-      updateStatus("Transmitting email via internal Secure Backend Relay...");
-      // Replace with your active ngrok secure backend URL link if testing in Word Online
-      const BACKEND_URL = "http://localhost:5000/api/send-email";
-
-      const response = await fetch(BACKEND_URL, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          to: email,
-          subject: `Attention: You were mentioned in a comment - ${anchor}`,
-          html: emailBodyHTML,
-        }),
-      });
-
-      const result = await response.json();
-
-      if (response.ok && result.success) {
-        updateStatus(`Live email notification dispatched to: ${email}`);
-      } else {
-        throw new Error(result.error || `HTTP error server status: ${response.status}`);
-      }
+      await sendEmailViaSharePoint(CONFIG.siteUrl, email, subject, emailBodyHTML, stage);
+      updateStatus(`${stage.label}: SUCCESS — email sent to ${email}.`);
+      console.log(`[MentionNotifier] ${stage.label}: SUCCESS — email sent to ${email}.`);
+      return;
     } catch (err) {
-      console.error("[MentionNotifier] Secure Backend Relay post failed:", err);
-      updateStatus("Email notification delivery failure.");
+      updateStatus(`${stage.label}: FAILED — ${err.message}`);
+      console.error(`[MentionNotifier] ${stage.label}: FAILED —`, err);
     }
-
-    console.log("📧 Email was NOT sent. written intended static message body below:", {
-      to: email,
-      subject,
-      html: emailBodyHTML,
-    });
-    flashStatus(`Email not sent to ${email} — ${err.message || err}`, 4000);
   }
+
+  // Stage 5/5: unchanged final fallback — Secure Backend Relay.
+  try {
+    updateStatus("Stage 5/5 (Secure Backend Relay): transmitting email...");
+    console.log(`[MentionNotifier] Stage 5/5 (Secure Backend Relay): POST for ${email}`);
+    // Replace with your active ngrok secure backend URL link if testing in Word Online
+    const BACKEND_URL = "http://localhost:5000/api/send-email";
+
+    const response = await fetch(BACKEND_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        to: email,
+        subject,
+        html: emailBodyHTML,
+      }),
+    });
+
+    const result = await response.json();
+
+    if (response.ok && result.success) {
+      updateStatus(`Stage 5/5 (Secure Backend Relay): SUCCESS — email dispatched to ${email}.`);
+      console.log(
+        `[MentionNotifier] Stage 5/5 (Secure Backend Relay): SUCCESS — email sent to ${email}.`
+      );
+      return;
+    }
+    throw new Error(result.error || `HTTP error server status: ${response.status}`);
+  } catch (err) {
+    console.error("[MentionNotifier] Stage 5/5 (Secure Backend Relay): FAILED —", err);
+    updateStatus("Stage 5/5 (Secure Backend Relay): FAILED — all delivery methods exhausted.");
+  }
+
+  console.log("📧 Email was NOT sent. written intended static message body below:", {
+    to: email,
+    subject,
+    html: emailBodyHTML,
+  });
+  flashStatus(`Email not sent to ${email} — all stages failed.`, 4000);
 }
 
 // Sends an email as the current authenticated user using the SharePoint REST
@@ -3465,12 +3498,12 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
 // without a CORS block, i.e. served same-origin as CONFIG.siteUrl (or via a
 // CORS-enabled proxy). Note: SendEmail only delivers to recipients inside the
 // same SharePoint tenant.
-async function sendEmailViaSharePoint(site, to, subject, htmlBody) {
+async function sendEmailViaSharePoint(site, to, subject, htmlBody, stage) {
   // 1. Acquire a form digest token (required for any SharePoint POST write).
   const ctxRes = await fetch(`${site}/_api/contextinfo`, {
     method: "POST",
-    headers: { Accept: "application/json;odata=verbose" },
-    credentials: "include",
+    headers: buildStageHeaders(stage, { Accept: "application/json;odata=verbose" }),
+    credentials: stage.credentialsMode,
   });
   if (!ctxRes.ok) throw new Error(`contextinfo HTTP ${ctxRes.status}`);
   const ctx = await ctxRes.json();
@@ -3479,12 +3512,12 @@ async function sendEmailViaSharePoint(site, to, subject, htmlBody) {
   // 2. Send the mail as the current user.
   const res = await fetch(`${site}/_api/SP.Utilities.Utility.SendEmail`, {
     method: "POST",
-    headers: {
+    headers: buildStageHeaders(stage, {
       Accept: "application/json;odata=verbose",
       "Content-Type": "application/json;odata=verbose",
       "X-RequestDigest": digest,
-    },
-    credentials: "include",
+    }),
+    credentials: stage.credentialsMode,
     body: JSON.stringify({
       properties: {
         __metadata: { type: "SP.Utilities.EmailProperties" },
