@@ -32,25 +32,23 @@ if (!SP_SITE_URL || !SP_DOMAIN || !SP_USERNAME || !SP_PASSWORD) {
   process.exit(1);
 }
 
-if (!process.env.SMTP_USER || !process.env.SMTP_PASS) {
-  console.error("[CRITICAL] Missing SMTP configuration in your .env file!");
-  process.exit(1);
-}
-
-// Email is sent directly via Gmail SMTP (nodemailer), not through SharePoint's
-// SendEmail REST utility — that path depends on the farm's Outgoing E-Mail
-// config and its legacy System.Net.Mail.SmtpClient, which has known TLS 1.2
-// negotiation problems against Gmail. Only the site-users lookup below still
-// needs SharePoint/NTLM, since that's genuinely SharePoint data.
+// Email is sent via SMTP (nodemailer), not through SharePoint's SendEmail
+// REST utility — that path depends on the farm's Outgoing E-Mail config and
+// its legacy System.Net.Mail.SmtpClient, which has known TLS 1.2 negotiation
+// problems. Only the site-users lookup below still needs SharePoint/NTLM,
+// since that's genuinely SharePoint data.
+//
+// Some relays (e.g. an internal smart host trusted by source IP) accept
+// anonymous submission, so auth is only attached when both SMTP_USER and
+// SMTP_PASS are actually provided.
 const smtpPort = parseInt(process.env.SMTP_PORT, 10) || 587;
+const smtpUser = process.env.SMTP_USER;
+const smtpPass = process.env.SMTP_PASS;
 const mailTransporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: smtpPort,
   secure: process.env.SMTP_SECURE === "true" || smtpPort === 465,
-  auth: {
-    user: process.env.SMTP_USER,
-    pass: process.env.SMTP_PASS,
-  },
+  ...(smtpUser && smtpPass ? { auth: { user: smtpUser, pass: smtpPass } } : {}),
   connectionTimeout: parseInt(process.env.SMTP_TIMEOUT, 10) || 30000,
   tls: {
     rejectUnauthorized: false, // Prevents local network handshake interruptions.
@@ -101,7 +99,9 @@ app.get("/api/siteusers", async (req, res) => {
 
     if (spRes.statusCode < 200 || spRes.statusCode >= 300) {
       console.error(`[NTLM] siteusers request failed: HTTP ${spRes.statusCode}`);
-      return res.status(spRes.statusCode).json({ error: `SharePoint responded ${spRes.statusCode}` });
+      return res
+        .status(spRes.statusCode)
+        .json({ error: `SharePoint responded ${spRes.statusCode}` });
     }
 
     const data = JSON.parse(spRes.body);
@@ -114,18 +114,20 @@ app.get("/api/siteusers", async (req, res) => {
   }
 });
 
-// Sends the mention notification directly via Gmail SMTP.
+// Sends the mention notification via SMTP.
 app.post("/api/send-email", async (req, res) => {
   const { to, subject, html } = req.body;
 
   if (!to || !subject || !html) {
-    return res.status(400).json({ error: "Missing required payload parameters (to, subject, html)" });
+    return res
+      .status(400)
+      .json({ error: "Missing required payload parameters (to, subject, html)" });
   }
 
   try {
     console.log(`[SMTP] Dispatching mail to ${to}...`);
     const info = await mailTransporter.sendMail({
-      from: `"Mention Notifier" <${process.env.SMTP_USER}>`,
+      from: `"Mention Notifier" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
       to,
       subject,
       html,
