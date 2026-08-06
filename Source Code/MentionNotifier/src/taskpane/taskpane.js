@@ -14,6 +14,7 @@ let editingCommentId = null; // Identifies targeted modification node
 let replyingToCommentId = null; // Identifies active parent response target
 let expandedCommentId = null; // Preserves open layout button drawers
 let deletingCommentId = null; // Preserves active delete confirmation prompt sub-state
+let highlightedSuggestionIndex = -1; // Keyboard-selected row within #suggestionsBox
 
 // CONCURRENCY LOCK: Prevents overlapping parallel executions from double-notifying
 let isScanning = false;
@@ -155,7 +156,11 @@ function initAutocomplete() {
     const text = e.target.value;
     const match = text.match(/@([\w.]*)$/);
 
-    if (match) {
+    // A bare "@" (no characters typed yet) must not fall through to an
+    // empty-string query — "".includes("") is always true, so every user
+    // in allUsersCache would "match" and get arbitrarily truncated to
+    // whatever 5 happen to be first in AD/LDAP return order.
+    if (match && match[1].length > 0) {
       const query = match[1].toLowerCase();
       const matchingUsers = allUsersCache.filter((u) => {
         const props = u.content && u.content.properties;
@@ -175,6 +180,31 @@ function initAutocomplete() {
     }
   });
 
+  input.addEventListener("keydown", function (e) {
+    if (box.style.display !== "block" || box.children.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      highlightedSuggestionIndex = (highlightedSuggestionIndex + 1) % box.children.length;
+      applySuggestionHighlight();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      highlightedSuggestionIndex =
+        (highlightedSuggestionIndex - 1 + box.children.length) % box.children.length;
+      applySuggestionHighlight();
+    } else if (e.key === "Enter") {
+      // Without this, Enter would fall through to its default behavior in
+      // the textarea (a newline) instead of confirming the highlighted
+      // suggestion — the two must be mutually exclusive while the box is open.
+      e.preventDefault();
+      if (highlightedSuggestionIndex >= 0) {
+        box.children[highlightedSuggestionIndex].click();
+      }
+    } else if (e.key === "Escape") {
+      box.style.display = "none";
+    }
+  });
+
   document.addEventListener("click", function (e) {
     if (e.target !== input) box.style.display = "none";
   });
@@ -182,6 +212,16 @@ function initAutocomplete() {
   if (addBtn) {
     addBtn.onclick = handleFormSubmission;
   }
+}
+
+function applySuggestionHighlight() {
+  const box = document.getElementById("suggestionsBox");
+  [...box.children].forEach((child, idx) => {
+    child.classList.toggle("active", idx === highlightedSuggestionIndex);
+    if (idx === highlightedSuggestionIndex) {
+      child.scrollIntoView({ block: "nearest" });
+    }
+  });
 }
 
 function initManagementUI() {
@@ -233,6 +273,9 @@ function renderSuggestions(users, startIdx, matchLen) {
 
     box.appendChild(div);
   });
+
+  highlightedSuggestionIndex = 0;
+  applySuggestionHighlight();
 }
 
 async function handleFormSubmission() {
@@ -780,13 +823,34 @@ async function scanAllComments() {
   }
 }
 
+// Mirrors the matching logic in resolveUserEmailLocal, but only checks
+// whether the token corresponds to a real, known user at all — this is what
+// keeps a plain "@typo" (no such user) from being treated as an actionable
+// mention at all, rather than surfacing a confusing "no email on file" error
+// for something that was never a real person to begin with.
+function isKnownUsername(username) {
+  const lowerUser = username.toLowerCase();
+  return allUsersCache.some((u) => {
+    const props = u.content && u.content.properties;
+    if (!props) return false;
+
+    const loginName = props.LoginName && props.LoginName.__text ? props.LoginName.__text : "";
+    const title = props.Title && props.Title.__text ? props.Title.__text : "";
+
+    const cleanLogin = extractUsernameFromLogin(loginName).toLowerCase();
+    const cleanTitle = extractUsernameFromLogin(title).toLowerCase();
+
+    return cleanLogin === lowerUser || cleanTitle === lowerUser;
+  });
+}
+
 async function processComment(comment, context) {
   if (comment.resolved) return;
 
   const text = comment.content || "";
   const mentionRegex = /@([\w][\w.]*[\w]|[\w])/g;
   const matches = [...text.matchAll(mentionRegex)];
-  const currentMentions = [...new Set(matches.map((m) => m[1]))];
+  const currentMentions = [...new Set(matches.map((m) => m[1]))].filter(isKnownUsername);
 
   if (currentMentions.length === 0) return;
 
