@@ -1,7 +1,6 @@
 const express = require("express");
 const cors = require("cors");
 const httpntlm = require("httpntlm");
-const { Client: LdapClient } = require("ldapts");
 const nodemailer = require("nodemailer");
 require("dotenv").config();
 
@@ -23,34 +22,46 @@ process.on("unhandledRejection", (err) => {
 app.use(cors());
 app.use(express.json());
 
-// One shared service account authenticates both the SharePoint NTLM relay and
-// the Active Directory LDAP bind below — deliberately not two separate
-// identities, since both already live in this same .env file and splitting
-// them wouldn't reduce the blast radius of a leak. Keep this account scoped
-// to read-only access (SharePoint site Read + default AD user-read rights),
-// never the domain Administrator.
-const SP_SITE_URL = process.env.SP_SITE_URL;
+// Shared service account for the SharePoint NTLM relay. Must be granted at
+// least Read access on every site collection listed in SITE_COLLECTIONS below
+// — being a Windows domain account is not enough by itself.
 const SP_DOMAIN = process.env.SP_DOMAIN;
 const SP_USERNAME = process.env.SP_USERNAME;
 const SP_PASSWORD = process.env.SP_PASSWORD;
 
-if (!SP_SITE_URL || !SP_DOMAIN || !SP_USERNAME || !SP_PASSWORD) {
+if (!SP_DOMAIN || !SP_USERNAME || !SP_PASSWORD) {
   console.error("[CRITICAL] Missing service account configuration in your .env file!");
   process.exit(1);
 }
 
-// LDAP connection target — not credentials (those are the SP_* vars above).
-// AD accepts DOMAIN\username as a simple-bind identity, so the bind DN is
-// derived from the same SP_DOMAIN/SP_USERNAME rather than duplicated in .env.
-const LDAP_URL = process.env.LDAP_URL;
-const LDAP_BASE_DN = process.env.LDAP_BASE_DN;
+// Known SharePoint site collections this add-in can pull a mention list from.
+// The taskpane detects which one the open document belongs to (from its own
+// URL) and sends back a short `site` id — never a raw URL — so this list is
+// also the allowlist that request gets checked against server-side. Add an
+// entry here for each new site collection; the shared service account above
+// must also be granted Read access on it. `isDefault` is used whenever the
+// open document's site can't be recognized (e.g. a local, non-SharePoint file).
+const SITE_COLLECTIONS = [
+  {
+    id: "desire",
+    url: process.env.SP_SITE_URL,
+    isDefault: true,
+  },
+  // { id: "finance", url: "http://spse01:8081/sites/finance" },
+];
 
-if (!LDAP_URL || !LDAP_BASE_DN) {
-  console.error("[CRITICAL] Missing Active Directory (LDAP) configuration in your .env file!");
+if (!SITE_COLLECTIONS.some((s) => s.url)) {
+  console.error("[CRITICAL] Missing SP_SITE_URL (or SITE_COLLECTIONS has no valid entries) in your .env file!");
   process.exit(1);
 }
 
-const LDAP_BIND_DN = `${SP_DOMAIN}\\${SP_USERNAME}`;
+function resolveSiteCollection(siteId) {
+  if (siteId) {
+    const found = SITE_COLLECTIONS.find((s) => s.id === siteId);
+    if (found) return found;
+  }
+  return SITE_COLLECTIONS.find((s) => s.isDefault) || SITE_COLLECTIONS[0];
+}
 
 // Email is sent via SMTP (nodemailer), not through SharePoint's SendEmail
 // REST utility — that path depends on the farm's Outgoing E-Mail config and
@@ -84,8 +95,7 @@ mailTransporter.verify((err) => {
 
 // Promise wrapper around httpntlm so the shared service-account identity
 // (NTLM) is used for every call this relay makes — no cookies/CORS involved,
-// since this all happens server-side. Only used by the ALTERNATE (commented
-// out) SharePoint block in /api/siteusers below.
+// since this all happens server-side.
 function ntlmRequest(method, url, { headers, body } = {}) {
   return new Promise((resolve, reject) => {
     httpntlm[method](
@@ -102,106 +112,53 @@ function ntlmRequest(method, url, { headers, body } = {}) {
   });
 }
 
-// (&(objectCategory=person)(objectClass=user)...) is the standard AD idiom for
-// "real user accounts" as opposed to computers/groups. The userAccountControl
-// bitmask check excludes disabled accounts, and requiring `mail` weeds out
-// built-in/service accounts (krbtgt, sp_farm, etc.) that have no mailbox —
-// those can't sensibly be @mentioned or emailed anyway.
-const AD_USER_FILTER =
-  "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))";
-
-async function searchAdUsers() {
-  const client = new LdapClient({ url: LDAP_URL });
-
-  try {
-    await client.bind(LDAP_BIND_DN, SP_PASSWORD);
-
-    const { searchEntries } = await client.search(LDAP_BASE_DN, {
-      scope: "sub",
-      filter: AD_USER_FILTER,
-      attributes: ["sAMAccountName", "displayName", "mail"],
-      paged: true,
-    });
-
-    // ldapts returns a requested-but-empty attribute as [] rather than
-    // omitting it, so a plain `|| null` check doesn't catch that case.
-    const singleValue = (value) => (Array.isArray(value) ? value[0] || null : value || null);
-
-    // Reshaped to match the SharePoint siteusers REST fields the frontend's
-    // normalizeSiteUsers() already expects (Id/Title/Email/LoginName/
-    // PrincipalType) — this is what lets the ACTIVE/ALTERNATE blocks in
-    // /api/siteusers below swap without any frontend change.
-    return searchEntries.map((entry, index) => {
-      const samAccountName = singleValue(entry.sAMAccountName);
-      return {
-        Id: index + 1,
-        Title: singleValue(entry.displayName) || samAccountName,
-        Email: singleValue(entry.mail),
-        LoginName: `${SP_DOMAIN}\\${samAccountName}`,
-        PrincipalType: 1,
-      };
-    });
-  } finally {
-    await client.unbind();
-  }
-}
-
 // Lightweight health check.
 app.get("/api/health", (req, res) => {
   res.json({ status: "ok" });
 });
 
-// ============================================================================
-// Mention-list source for /api/siteusers — ACTIVE: Active Directory (LDAP).
-//
-// To switch back to the SharePoint-site-scoped version instead: comment out
-// this block and uncomment the ALTERNATE block further below. The response
-// shape (`{ success, users }`, with Id/Title/Email/LoginName/PrincipalType
-// per user) is identical either way, so nothing else needs to change.
-// ============================================================================
-app.get("/api/siteusers", async (req, res) => {
-  try {
-    console.log(`[LDAP] Fetching users from ${LDAP_BASE_DN}...`);
-    const users = await searchAdUsers();
-    console.log(`[LDAP] AD user search OK — ${users.length} user(s) loaded.`);
-    return res.json({ success: true, users });
-  } catch (error) {
-    console.error("[LDAP] AD user search failed:", error.message || error);
-    return res.status(502).json({ error: error.message || "LDAP request to Active Directory failed" });
-  }
+// Exposes the known site collections (id + url only, no credentials) so the
+// taskpane can match the open document's URL against them client-side and
+// tell us which one it belongs to.
+app.get("/api/site-collections", (req, res) => {
+  res.json({
+    success: true,
+    siteCollections: SITE_COLLECTIONS.map(({ id, url }) => ({ id, url })),
+  });
 });
 
-// ============================================================================
-// Mention-list source for /api/siteusers — ALTERNATE (commented out):
-// SharePoint site users, scoped to SP_SITE_URL's own site collection only.
+// Returns the site's user directory via the SharePoint REST API, authenticated
+// server-side with the NTLM service account (avoids the browser CORS/claims
+// issues that block this call when made directly from the taskpane).
 //
-// NOTE: if you re-enable this, the shared service account (SP_USERNAME) must
-// actually have Read access granted on SP_SITE_URL's site collection — the
-// account currently configured may not have that yet.
-// ============================================================================
-// app.get("/api/siteusers", async (req, res) => {
-//   try {
-//     console.log(`[NTLM] Fetching site users from ${SP_SITE_URL}...`);
-//     const spRes = await ntlmRequest("get", `${SP_SITE_URL}/_api/web/siteusers`, {
-//       headers: { Accept: "application/json;odata=verbose" },
-//     });
-//
-//     if (spRes.statusCode < 200 || spRes.statusCode >= 300) {
-//       console.error(`[NTLM] siteusers request failed: HTTP ${spRes.statusCode}`);
-//       return res
-//         .status(spRes.statusCode)
-//         .json({ error: `SharePoint responded ${spRes.statusCode}` });
-//     }
-//
-//     const data = JSON.parse(spRes.body);
-//     const results = (data && data.d && data.d.results) || [];
-//     console.log(`[NTLM] siteusers OK — ${results.length} user(s) loaded.`);
-//     return res.json({ success: true, users: results });
-//   } catch (error) {
-//     console.error("[NTLM] siteusers request failed:", error.message || error);
-//     return res.status(502).json({ error: error.message || "NTLM request to SharePoint failed" });
-//   }
-// });
+// `?site=<id>` selects which known site collection to query — the id is
+// checked against SITE_COLLECTIONS above (never a client-supplied URL), so a
+// caller can't redirect this service account's NTLM request anywhere else.
+app.get("/api/siteusers", async (req, res) => {
+  const site = resolveSiteCollection(req.query.site);
+
+  try {
+    console.log(`[NTLM] Fetching site users from ${site.url} (site="${site.id}")...`);
+    const spRes = await ntlmRequest("get", `${site.url}/_api/web/siteusers`, {
+      headers: { Accept: "application/json;odata=verbose" },
+    });
+
+    if (spRes.statusCode < 200 || spRes.statusCode >= 300) {
+      console.error(`[NTLM] siteusers request failed: HTTP ${spRes.statusCode}`);
+      return res
+        .status(spRes.statusCode)
+        .json({ error: `SharePoint responded ${spRes.statusCode}` });
+    }
+
+    const data = JSON.parse(spRes.body);
+    const results = (data && data.d && data.d.results) || [];
+    console.log(`[NTLM] siteusers OK — ${results.length} user(s) loaded from "${site.id}".`);
+    return res.json({ success: true, users: results, site: site.id });
+  } catch (error) {
+    console.error("[NTLM] siteusers request failed:", error.message || error);
+    return res.status(502).json({ error: error.message || "NTLM request to SharePoint failed" });
+  }
+});
 
 // Sends the mention notification via SMTP.
 app.post("/api/send-email", async (req, res) => {
@@ -235,7 +192,6 @@ const BACKEND_PORT = process.env.PORT || 5000;
 app.listen(BACKEND_PORT, () => {
   console.log("====================================================");
   console.log(` Mention Notifier backend active on port: ${BACKEND_PORT}`);
-  console.log(` Mention-list source: Active Directory (${LDAP_BASE_DN})`);
-  console.log(` SharePoint site (unused unless ALTERNATE block is active): ${SP_SITE_URL}`);
+  console.log(` Known site collections: ${SITE_COLLECTIONS.map((s) => `${s.id} (${s.url})`).join(", ")}`);
   console.log("====================================================");
 });

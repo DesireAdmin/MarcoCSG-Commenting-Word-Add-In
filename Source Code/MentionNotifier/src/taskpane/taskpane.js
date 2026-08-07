@@ -112,10 +112,39 @@ function normalizeSiteUsers(results) {
   }));
 }
 
+// Matches the open document's own URL (Office.context.document.url) against
+// the backend's known site collections, so /api/siteusers can be pointed at
+// whichever site this specific document actually lives in — auto-detected,
+// no manual configuration per document. Returns null (backend falls back to
+// its own default) when the document isn't recognized as any known
+// SharePoint site — e.g. a local, non-SharePoint file.
+async function detectCurrentSiteId() {
+  try {
+    const docUrl = (Office.context.document && Office.context.document.url) || "";
+    if (!docUrl) return null;
+
+    const res = await fetch(`${CONFIG.relayBaseUrl}/api/site-collections`);
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const siteCollections = (data && data.siteCollections) || [];
+    const lowerDocUrl = docUrl.toLowerCase();
+
+    const matched = siteCollections.find(
+      (site) => site.url && lowerDocUrl.startsWith(site.url.toLowerCase())
+    );
+    return matched ? matched.id : null;
+  } catch (err) {
+    console.error("[MentionNotifier] Site-collection detection failed:", err);
+    return null;
+  }
+}
+
 // GET /api/siteusers from the backend NTLM relay — authenticates server-side
 // with the service account (no browser CORS/claims issues).
-async function fetchSiteUsersViaRelay() {
-  const res = await fetch(`${CONFIG.relayBaseUrl}/api/siteusers`);
+async function fetchSiteUsersViaRelay(siteId) {
+  const query = siteId ? `?site=${encodeURIComponent(siteId)}` : "";
+  const res = await fetch(`${CONFIG.relayBaseUrl}/api/siteusers${query}`);
 
   if (!res.ok) {
     let detail = "";
@@ -132,12 +161,15 @@ async function fetchSiteUsersViaRelay() {
   return normalizeSiteUsers(data && data.users);
 }
 
-// Loads the real user directory from the backend NTLM relay. If it fails,
-// allUsersCache stays empty and an error is shown near the action button —
-// there is no static/offline fallback data.
+// Loads the real user directory from the backend NTLM relay, scoped to
+// whichever SharePoint site collection the open document was detected as
+// belonging to. If it fails, allUsersCache stays empty and an error is shown
+// near the action button — there is no static/offline fallback data.
 async function preloadSiteUsers() {
   try {
-    allUsersCache = await fetchSiteUsersViaRelay();
+    const siteId = await detectCurrentSiteId();
+    console.log(`[MentionNotifier] Detected site collection: ${siteId || "none (using backend default)"}`);
+    allUsersCache = await fetchSiteUsersViaRelay(siteId);
     console.log(`[MentionNotifier] siteusers: loaded ${allUsersCache.length} user(s) from backend relay.`);
   } catch (err) {
     console.error("[MentionNotifier] siteusers: backend relay failed —", err);
