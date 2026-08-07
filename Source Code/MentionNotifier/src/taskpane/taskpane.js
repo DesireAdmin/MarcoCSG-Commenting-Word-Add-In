@@ -567,20 +567,38 @@ function formatCommentTimestamp(dateInput) {
   return `${month} ${day}, ${year} at ${hours}:${minutes} ${ampm}`;
 }
 
+// Only surfaces a ref code or "PENDING" when the comment actually has (or is
+// waiting to get) a real, known-user mention — a comment whose only "@word"
+// matches no one at all should read as a normal message with no badge, not
+// as something perpetually stuck in a pending state.
+function computeRefLabel(content) {
+  const refMatch = content.match(/\[ref:([^\]]+)\]/);
+  if (refMatch) return refMatch[1];
+
+  const hasKnownMention = [...content.matchAll(/@([\w][\w.]*[\w]|[\w])/g)].some((m) =>
+    isKnownUsername(m[1])
+  );
+  return hasKnownMention ? "PENDING" : null;
+}
+
 function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
   let stateClass = "";
   if (editingCommentId === comment.id) stateClass = "active-edit";
   else if (replyingToCommentId === comment.id) stateClass = "active-reply";
 
-  const refRegex = /\[ref:([^\]]+)\]/;
-  const refMatch = comment.content.match(refRegex);
-  const refNumber = refMatch ? refMatch[1] : parentRef || "PENDING";
+  const refNumber = parentRef || computeRefLabel(comment.content);
 
   const displayPayloadText = comment.content.replace(/\[ref:[^\]]+\]/g, "").trim();
 
+  // Only highlight an "@word" as a mention if it actually resolves to a real,
+  // known user — an "@typo" that matches no one should render as plain text,
+  // not imply the comment is tracking a real (if unresolved) mention.
   const inlineHighlightedText = displayPayloadText.replace(
     /@([\w][\w.]*[\w]|[\w])/g,
-    `<span style="color: #0078d4; font-weight: 600;">@$1</span>`
+    (fullMatch, username) =>
+      isKnownUsername(username)
+        ? `<span style="color: #0078d4; font-weight: 600;">@${username}</span>`
+        : fullMatch
   );
 
   const isDrawerOpen = expandedCommentId === comment.id;
@@ -588,9 +606,9 @@ function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
   const timestampText = formatCommentTimestamp(comment.creationDate);
 
   return `
-    <div class="comment-card ${stateClass}" data-id="${comment.id}" data-text="${encodeURIComponent(displayPayloadText)}" data-author="${encodeURIComponent(comment.author)}" data-ref="${refNumber}">
+    <div class="comment-card ${stateClass}" data-id="${comment.id}" data-text="${encodeURIComponent(displayPayloadText)}" data-author="${encodeURIComponent(comment.author)}" data-ref="${refNumber || ""}">
       <div class="card-header-line">
-        <span><span class="author-name">${comment.author}</span> — <span class="ref-badge">${refNumber}</span></span>
+        <span><span class="author-name">${comment.author}</span>${refNumber ? ` — <span class="ref-badge">${refNumber}</span>` : ""}</span>
         ${isReplyNode ? `<span style="color: #666; font-size: 10px; background: #e1dfdd; padding: 1px 4px; border-radius:2px;">Reply</span>` : ""}
       </div>
       <div class="card-body-text">${inlineHighlightedText || "<em>[No text content]</em>"}</div>
@@ -647,7 +665,7 @@ function renderCommentsList() {
       const replyOuterFlexWrapper = document.createElement("div");
       replyOuterFlexWrapper.className = "reply-nested-wrapper";
 
-      const parentRefNumber = thread.content.match(/\[ref:([^\]]+)\]/)?.[1] || "PENDING";
+      const parentRefNumber = computeRefLabel(thread.content);
 
       replyOuterFlexWrapper.innerHTML = `
         <div class="thread-line-gutter"></div>
