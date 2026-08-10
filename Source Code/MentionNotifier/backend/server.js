@@ -6,71 +6,145 @@ require("dotenv").config();
 
 const app = express();
 
-// Without these, an error httpntlm surfaces as an emitted 'error' event
-// (rather than through our callback/Promise wrapper) crashes the whole
-// process with no useful log line — IIS then just reports a bare 502.
-// Logging here turns that into a visible stack trace instead.
+// small timestamped logger, makes the IISNode log files actually readable
+function logInfo(...args) {
+  console.log(`[${new Date().toISOString()}] [INFO]`, ...args);
+}
+function logError(...args) {
+  console.error(`[${new Date().toISOString()}] [ERROR]`, ...args);
+}
+
+// httpntlm sometimes throws via an 'error' event instead of the callback,
+// which otherwise kills the process with nothing in the logs. At least this
+// way we get a stack trace before it goes down.
 process.on("uncaughtException", (err) => {
-  console.error("[FATAL] Uncaught exception:", err && err.stack ? err.stack : err);
+  logError("[FATAL] Uncaught exception:", err && err.stack ? err.stack : err);
 });
 process.on("unhandledRejection", (err) => {
-  console.error("[FATAL] Unhandled rejection:", err && err.stack ? err.stack : err);
+  logError("[FATAL] Unhandled rejection:", err && err.stack ? err.stack : err);
 });
 
-// Same-origin under IISNode in production; harmless to also allow cross-origin
-// callers (e.g. localhost:3000 during local dev-server testing).
+// same origin once this runs under IISNode, cors() here is really just for
+// hitting the API from the localhost:3000 dev server
 app.use(cors());
 app.use(express.json());
 
-// Shared service account for the SharePoint NTLM relay. Must be granted at
-// least Read access on every site collection listed in SITE_COLLECTIONS below
-// — being a Windows domain account is not enough by itself.
+// basic access log - method, path, status, how long it took. Doesn't matter
+// which route handles the request, this always fires
+app.use((req, res, next) => {
+  const startedAt = Date.now();
+  res.on("finish", () => {
+    logInfo(`${req.method} ${req.originalUrl} -> ${res.statusCode} (${Date.now() - startedAt}ms)`);
+  });
+  next();
+});
+
+// service account for the SharePoint NTLM calls. It needs Read access
+// wherever the actual documents live - if there are a lot of site
+// collections, do this with a Web Application User Policy in Central Admin
+// rather than granting access site by site.
 const SP_DOMAIN = process.env.SP_DOMAIN;
 const SP_USERNAME = process.env.SP_USERNAME;
 const SP_PASSWORD = process.env.SP_PASSWORD;
 
 if (!SP_DOMAIN || !SP_USERNAME || !SP_PASSWORD) {
-  console.error("[CRITICAL] Missing service account configuration in your .env file!");
+  logError("[CRITICAL] Missing service account configuration in your .env file!");
   process.exit(1);
 }
 
-// Known SharePoint site collections this add-in can pull a mention list from.
-// The taskpane detects which one the open document belongs to (from its own
-// URL) and sends back a short `site` id — never a raw URL — so this list is
-// also the allowlist that request gets checked against server-side. Add an
-// entry here for each new site collection; the shared service account above
-// must also be granted Read access on it. `isDefault` is used whenever the
-// open document's site can't be recognized (e.g. a local, non-SharePoint file).
-const SITE_COLLECTIONS = [
-  {
-    id: "desire",
-    url: process.env.SP_SITE_URL,
-    isDefault: true,
-  },
-  // { id: "finance", url: "http://spse01:8081/sites/finance" },
-];
+// hostnames of the actual SharePoint front-end servers we trust. This is the
+// only allowlist we keep - not site collections, not web apps, not managed
+// paths. Without it /api/siteusers would happily take any URL a caller sends
+// and make our service account hit it, which is an SSRF hole - and worse
+// with NTLM specifically, since an attacker-controlled server on the other
+// end could capture the auth handshake. Server hostnames barely change even
+// as site collections pile up, so this doesn't bring back the per-site
+// maintenance problem we were trying to get away from.
+const TRUSTED_SP_HOSTS = (process.env.TRUSTED_SP_HOSTS || "")
+  .split(",")
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean);
 
-if (!SITE_COLLECTIONS.some((s) => s.url)) {
-  console.error("[CRITICAL] Missing SP_SITE_URL (or SITE_COLLECTIONS has no valid entries) in your .env file!");
+if (TRUSTED_SP_HOSTS.length === 0) {
+  logError("[CRITICAL] Missing TRUSTED_SP_HOSTS in your .env file!");
   process.exit(1);
 }
 
-function resolveSiteCollection(siteId) {
-  if (siteId) {
-    const found = SITE_COLLECTIONS.find((s) => s.id === siteId);
-    if (found) return found;
+// just checks the url is http(s) and the host is one we actually trust
+function isTrustedSharePointUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+    return TRUSTED_SP_HOSTS.includes(parsed.hostname.toLowerCase());
+  } catch (err) {
+    return false;
   }
-  return SITE_COLLECTIONS.find((s) => s.isDefault) || SITE_COLLECTIONS[0];
 }
 
-// Email is sent via SMTP (nodemailer), not through SharePoint's SendEmail
-// REST utility — that path depends on the farm's Outgoing E-Mail config and
-// its legacy System.Net.Mail.SmtpClient, which has known TLS 1.2 negotiation
-// problems.
+// Works out which SharePoint site a document's URL actually belongs to by
+// calling _api/web/siteusers at the full path first, then trimming one
+// segment off the end and trying again, and so on, until something answers.
+// Turns out _api/web only resolves cleanly when it's called right after an
+// actual site/web URL - not a document library, not a folder - so just
+// stripping the filename and hoping for the best isn't enough (that's what
+// caused the 404s we saw earlier against MySiteB). Rather than hardcode
+// managed paths or try to guess how deep a site sits, this just asks
+// SharePoint directly at each level and stops at the first one that works.
 //
-// Some relays (e.g. an internal smart host trusted by source IP) accept
-// anonymous submission, so auth is only attached when both SMTP_USER and
-// SMTP_PASS are actually provided.
+// A 401/403 along the way means we DID find a real site, just no
+// permission there, so we stop immediately instead of keep trimming - a
+// shorter URL isn't going to fix a permissions problem.
+async function findSiteUsersForUrl(rawUrl) {
+  const parsed = new URL(rawUrl);
+  const segments = parsed.pathname.split("/").filter(Boolean);
+
+  // the last segment of a document URL is always the filename, and a file
+  // can never be a site, so skip trying it - saves a call that's guaranteed
+  // to fail (and each attempt here is really 2 requests once NTLM's
+  // challenge/response is factored in)
+  const lastSegment = segments[segments.length - 1] || "";
+  const startIndex = /\.[a-z0-9]{2,5}$/i.test(lastSegment) ? segments.length - 1 : segments.length;
+
+  for (let i = startIndex; i >= 0; i--) {
+    const candidatePath = segments.slice(0, i).join("/");
+    const candidateUrl = `${parsed.protocol}//${parsed.host}${candidatePath ? "/" + candidatePath : ""}`;
+
+    let spRes;
+    try {
+      spRes = await ntlmRequest("get", `${candidateUrl}/_api/web/siteusers`, {
+        headers: { Accept: "application/json;odata=verbose" },
+      });
+    } catch (err) {
+      logError(`[NTLM] Candidate ${candidateUrl} — request failed: ${err.message || err}`);
+      continue; // couldn't even reach this one, try a shorter path
+    }
+
+    logInfo(`[NTLM] Candidate ${candidateUrl} -> HTTP ${spRes.statusCode}`);
+
+    if (spRes.statusCode === 401 || spRes.statusCode === 403) {
+      const err = new Error(`Access denied by SharePoint (HTTP ${spRes.statusCode}) at ${candidateUrl}`);
+      err.code = "no_access";
+      throw err;
+    }
+
+    if (spRes.statusCode >= 200 && spRes.statusCode < 300) {
+      const data = JSON.parse(spRes.body);
+      const results = (data && data.d && data.d.results) || [];
+      return { results, resolvedUrl: candidateUrl };
+    }
+    // anything else (404 etc) - not a site, keep trimming and try again
+  }
+
+  const err = new Error(`No SharePoint site resolved for any prefix of ${rawUrl}`);
+  err.code = "not_found";
+  throw err;
+}
+
+// Mail goes out straight through SMTP (Gmail in this deployment) instead of
+// SharePoint's own SendEmail utility - that one depends on the farm's
+// Outgoing E-Mail setup and its old System.Net.Mail.SmtpClient has known
+// TLS 1.2 issues talking to Gmail. Some internal relays allow anonymous
+// submission, so we only attach auth if a user/pass is actually configured.
 const smtpPort = parseInt(process.env.SMTP_PORT, 10) || 587;
 const smtpUser = process.env.SMTP_USER;
 const smtpPass = process.env.SMTP_PASS;
@@ -81,21 +155,20 @@ const mailTransporter = nodemailer.createTransport({
   ...(smtpUser && smtpPass ? { auth: { user: smtpUser, pass: smtpPass } } : {}),
   connectionTimeout: parseInt(process.env.SMTP_TIMEOUT, 10) || 30000,
   tls: {
-    rejectUnauthorized: false, // Prevents local network handshake interruptions.
+    rejectUnauthorized: false, // avoids handshake failures on our network
   },
 });
 
 mailTransporter.verify((err) => {
   if (err) {
-    console.error("[SMTP] Connection verification failed:", err.message);
+    logError("[SMTP] Connection verification failed:", err.stack || err.message);
   } else {
-    console.log("[SMTP] Server is ready to send messages.");
+    logInfo("[SMTP] Server is ready to send messages.");
   }
 });
 
-// Promise wrapper around httpntlm so the shared service-account identity
-// (NTLM) is used for every call this relay makes — no cookies/CORS involved,
-// since this all happens server-side.
+// small promise wrapper around httpntlm so we can just await it like
+// everything else, using the shared service account
 function ntlmRequest(method, url, { headers, body } = {}) {
   return new Promise((resolve, reject) => {
     httpntlm[method](
@@ -112,86 +185,99 @@ function ntlmRequest(method, url, { headers, body } = {}) {
   });
 }
 
-// Lightweight health check.
+// quick way to confirm the backend is even running before digging into logs
 app.get("/api/health", (req, res) => {
-  res.json({ status: "ok" });
+  res.json({ status: "ok", trustedHosts: TRUSTED_SP_HOSTS });
 });
 
-// Exposes the known site collections (id + url only, no credentials) so the
-// taskpane can match the open document's URL against them client-side and
-// tell us which one it belongs to.
-app.get("/api/site-collections", (req, res) => {
-  res.json({
-    success: true,
-    siteCollections: SITE_COLLECTIONS.map(({ id, url }) => ({ id, url })),
-  });
-});
-
-// Returns the site's user directory via the SharePoint REST API, authenticated
-// server-side with the NTLM service account (avoids the browser CORS/claims
-// issues that block this call when made directly from the taskpane).
-//
-// `?site=<id>` selects which known site collection to query — the id is
-// checked against SITE_COLLECTIONS above (never a client-supplied URL), so a
-// caller can't redirect this service account's NTLM request anywhere else.
+// Builds the @mention list for whichever SharePoint site the open document
+// actually belongs to. `docUrl` is Office.context.document.url from the
+// taskpane - we check it's on a host we trust, then let
+// findSiteUsersForUrl work out the real site and fetch its users. Nothing
+// here needs to know about site collections, web apps or managed paths in
+// advance, so new sites just work without touching this file.
 app.get("/api/siteusers", async (req, res) => {
-  const site = resolveSiteCollection(req.query.site);
+  const docUrl = req.query.docUrl;
+
+  if (!docUrl || !isTrustedSharePointUrl(docUrl)) {
+    logError(`[NTLM] Rejected request — not a trusted SharePoint URL: ${docUrl}`);
+    return res.status(400).json({
+      error: "not_sharepoint",
+      message: "This document isn't recognized as opened from a SharePoint site — @mentions are unavailable.",
+    });
+  }
 
   try {
-    console.log(`[NTLM] Fetching site users from ${site.url} (site="${site.id}")...`);
-    const spRes = await ntlmRequest("get", `${site.url}/_api/web/siteusers`, {
-      headers: { Accept: "application/json;odata=verbose" },
-    });
-
-    if (spRes.statusCode < 200 || spRes.statusCode >= 300) {
-      console.error(`[NTLM] siteusers request failed: HTTP ${spRes.statusCode}`);
-      return res
-        .status(spRes.statusCode)
-        .json({ error: `SharePoint responded ${spRes.statusCode}` });
+    logInfo(`[NTLM] Resolving site for ${docUrl}...`);
+    const { results, resolvedUrl } = await findSiteUsersForUrl(docUrl);
+    logInfo(`[NTLM] siteusers OK — ${results.length} user(s) loaded from ${resolvedUrl}.`);
+    return res.json({ success: true, users: results });
+  } catch (error) {
+    if (error.code === "no_access") {
+      logError(`[NTLM] ${error.message}`);
+      return res.status(403).json({
+        error: "no_access",
+        message: "Please contact your admin to enable @mentions for this document's location.",
+      });
     }
 
-    const data = JSON.parse(spRes.body);
-    const results = (data && data.d && data.d.results) || [];
-    console.log(`[NTLM] siteusers OK — ${results.length} user(s) loaded from "${site.id}".`);
-    return res.json({ success: true, users: results, site: site.id });
-  } catch (error) {
-    console.error("[NTLM] siteusers request failed:", error.message || error);
-    return res.status(502).json({ error: error.message || "NTLM request to SharePoint failed" });
+    if (error.code === "not_found") {
+      logError(`[NTLM] ${error.message}`);
+      return res.status(404).json({
+        error: "not_found",
+        message: "No SharePoint site could be found for this document — @mentions are unavailable.",
+      });
+    }
+
+    // full error goes to the log for us to debug, client just gets a plain
+    // message - no point leaking the service account name or raw NTLM
+    // errors to whoever's looking at the browser console
+    logError("[NTLM] siteusers request failed:", error.stack || error.message || error);
+    return res.status(502).json({ error: "SharePoint request failed — see backend logs for details." });
   }
 });
 
-// Sends the mention notification via SMTP.
+// sends the actual mention notification email
 app.post("/api/send-email", async (req, res) => {
   const { to, subject, html } = req.body;
 
   if (!to || !subject || !html) {
+    logError(`[SMTP] Rejected request — missing required field(s) (to="${to}", subject="${subject}")`);
     return res
       .status(400)
       .json({ error: "Missing required payload parameters (to, subject, html)" });
   }
 
   try {
-    console.log(`[SMTP] Dispatching mail to ${to}...`);
+    logInfo(`[SMTP] Dispatching mail to ${to}...`);
     const info = await mailTransporter.sendMail({
       from: `"Mention Notifier" <${process.env.SMTP_FROM || process.env.SMTP_USER}>`,
       to,
       subject,
       html,
     });
-    console.log(`[SMTP] Message sent successfully: ${info.messageId}`);
+    logInfo(`[SMTP] Message sent successfully: ${info.messageId}`);
     return res.status(200).json({ success: true, messageId: info.messageId });
   } catch (error) {
-    console.error("[SMTP ERROR] Mail delivery failed:", error.message || error);
-    return res.status(502).json({ error: error.message || "SMTP server rejected transmission" });
+    logError("[SMTP ERROR] Mail delivery failed:", error.stack || error.message || error);
+    return res.status(502).json({ error: "SMTP server rejected transmission — see backend logs for details." });
   }
 });
 
-// IISNode sets process.env.PORT to a named pipe address in production; the
-// fallback below only applies when running standalone (e.g. local testing).
+// catches anything that slips past the routes above (bad JSON body, a
+// thrown error we didn't wrap in try/catch, etc) so it ends up in the logs
+// with a real stack trace instead of just a bare IIS 500
+app.use((err, req, res, next) => {
+  logError(`[EXPRESS] Unhandled error on ${req.method} ${req.originalUrl}:`, err.stack || err.message || err);
+  res.status(500).json({ error: "Unexpected server error — see backend logs for details." });
+});
+
+// IISNode gives us a named pipe for PORT in production - 5000 only matters
+// when running this standalone for local testing
 const BACKEND_PORT = process.env.PORT || 5000;
 app.listen(BACKEND_PORT, () => {
-  console.log("====================================================");
-  console.log(` Mention Notifier backend active on port: ${BACKEND_PORT}`);
-  console.log(` Known site collections: ${SITE_COLLECTIONS.map((s) => `${s.id} (${s.url})`).join(", ")}`);
-  console.log("====================================================");
+  logInfo("====================================================");
+  logInfo(` Mention Notifier backend active on port: ${BACKEND_PORT}`);
+  logInfo(` Trusted SharePoint hosts: ${TRUSTED_SP_HOSTS.join(", ")}`);
+  logInfo("====================================================");
 });

@@ -2,9 +2,7 @@
    MentionNotifier Engine (Local Sandbox & Native Word Comments Mapping)
    ======================================================================== */
 
-
 let allUsersCache = []; // Global in-memory cache loaded from the backend relay
-const processedIds = new Set();
 const emailCache = new Map();
 
 const notifiedMentions = new Map(); // Structure: Map<commentId, Set<username>>
@@ -47,55 +45,6 @@ Office.onReady(function (info) {
   }
 });
 
-// Writes host info + supported WordApi requirement sets into the diagnostics panel.
-// This is the authoritative way to know if the Comments API works in Word 2016.
-// function runDiagnostics(info) {
-//   const el = document.getElementById("diag");
-//   if (!el) return;
-
-//   const lines = [];
-
-//   try {
-//     const d = Office.context.diagnostics;
-//     lines.push(`Host:     ${d.host}`);
-//     lines.push(`Platform: ${d.platform}`);
-//     lines.push(`Version:  ${d.version}`);
-//   } catch (e) {
-//     lines.push(`Host:     ${(info && info.host) || "unknown"}`);
-//     lines.push("(Office.context.diagnostics not available in this build)");
-//   }
-
-//   lines.push("");
-//   lines.push("WordApi requirement sets:");
-
-//   const versions = ["1.1", "1.2", "1.3", "1.4", "1.5", "1.6", "1.7", "1.8"];
-//   versions.forEach((v) => {
-//     let supported = false;
-//     try {
-//       supported = Office.context.requirements.isSetSupported("WordApi", v);
-//     } catch (e) {
-//       supported = false;
-//     }
-//     lines.push(`  WordApi ${v}: ${supported ? "[YES]" : "[ no ]"}`);
-//   });
-
-//   let comments14 = false;
-//   try {
-//     comments14 = Office.context.requirements.isSetSupported("WordApi", "1.4");
-//   } catch (e) {
-//     comments14 = false;
-//   }
-
-//   lines.push("");
-//   lines.push(
-//     comments14
-//       ? ">> Comments API (getComments / insertComment) IS supported here."
-//       : ">> Comments API needs WordApi 1.4 - NOT supported in this build."
-//   );
-
-//   el.innerText = lines.join("\n");
-// }
-
 // Normalizes a raw siteusers REST result array to a consistent shape
 // (content.properties.<Field>.__text) used throughout the rest of the file.
 function normalizeSiteUsers(results) {
@@ -112,68 +61,51 @@ function normalizeSiteUsers(results) {
   }));
 }
 
-// Matches the open document's own URL (Office.context.document.url) against
-// the backend's known site collections, so /api/siteusers can be pointed at
-// whichever site this specific document actually lives in — auto-detected,
-// no manual configuration per document. Returns null (backend falls back to
-// its own default) when the document isn't recognized as any known
-// SharePoint site — e.g. a local, non-SharePoint file.
-async function detectCurrentSiteId() {
-  try {
-    const docUrl = (Office.context.document && Office.context.document.url) || "";
-    if (!docUrl) return null;
-
-    const res = await fetch(`${CONFIG.relayBaseUrl}/api/site-collections`);
-    if (!res.ok) return null;
-
-    const data = await res.json();
-    const siteCollections = (data && data.siteCollections) || [];
-    const lowerDocUrl = docUrl.toLowerCase();
-
-    const matched = siteCollections.find(
-      (site) => site.url && lowerDocUrl.startsWith(site.url.toLowerCase())
-    );
-    return matched ? matched.id : null;
-  } catch (err) {
-    console.error("[MentionNotifier] Site-collection detection failed:", err);
-    return null;
-  }
-}
-
-// GET /api/siteusers from the backend NTLM relay — authenticates server-side
-// with the service account (no browser CORS/claims issues).
-async function fetchSiteUsersViaRelay(siteId) {
-  const query = siteId ? `?site=${encodeURIComponent(siteId)}` : "";
+// Calls /api/siteusers on the backend relay (that's what actually talks to
+// SharePoint over NTLM, keeps us out of browser CORS/claims issues). We just
+// hand it the document's own URL and let it figure out which SharePoint site
+// that maps to and whether we're even allowed to query it - nothing to
+// configure here on the client side.
+async function fetchSiteUsersViaRelay() {
+  const docUrl = (Office.context.document && Office.context.document.url) || "";
+  const query = docUrl ? `?docUrl=${encodeURIComponent(docUrl)}` : "";
   const res = await fetch(`${CONFIG.relayBaseUrl}/api/siteusers${query}`);
 
   if (!res.ok) {
-    let detail = "";
+    // backend already gives us a readable message for the common cases
+    // (not a SharePoint doc, or no access) - just show that instead of a
+    // generic HTTP error
+    let message = `HTTP ${res.status}`;
     try {
       const e = await res.json();
-      detail = e && e.error ? ` — ${e.error}` : "";
+      if (e && e.message) message = e.message;
+      else if (e && e.error) message = `${message} — ${e.error}`;
     } catch (ignore) {
       /* response had no JSON body */
     }
-    throw new Error(`HTTP ${res.status}${detail}`);
+    throw new Error(message);
   }
 
   const data = await res.json();
   return normalizeSiteUsers(data && data.users);
 }
 
-// Loads the real user directory from the backend NTLM relay, scoped to
-// whichever SharePoint site collection the open document was detected as
-// belonging to. If it fails, allUsersCache stays empty and an error is shown
-// near the action button — there is no static/offline fallback data.
+// Loads the mention list for whatever SharePoint site the current document
+// lives in. If this fails for any reason we just leave allUsersCache empty
+// and show whatever the backend told us (wrong site, no access, etc) - no
+// hardcoded fallback list.
 async function preloadSiteUsers() {
   try {
-    const siteId = await detectCurrentSiteId();
-    console.log(`[MentionNotifier] Detected site collection: ${siteId || "none (using backend default)"}`);
-    allUsersCache = await fetchSiteUsersViaRelay(siteId);
-    console.log(`[MentionNotifier] siteusers: loaded ${allUsersCache.length} user(s) from backend relay.`);
+    allUsersCache = await fetchSiteUsersViaRelay();
+    console.log(
+      `[MentionNotifier] siteusers: loaded ${allUsersCache.length} user(s) from backend relay.`
+    );
   } catch (err) {
     console.error("[MentionNotifier] siteusers: backend relay failed —", err);
-    showError("Unable to load the user directory. @mentions and notifications are unavailable.");
+    showError(
+      err.message ||
+        "Unable to load the user directory. @mentions and notifications are unavailable."
+    );
   }
 }
 
@@ -188,10 +120,9 @@ function initAutocomplete() {
     const text = e.target.value;
     const match = text.match(/@([\w.]*)$/);
 
-    // A bare "@" (no characters typed yet) must not fall through to an
-    // empty-string query — "".includes("") is always true, so every user
-    // in allUsersCache would "match" and get arbitrarily truncated to
-    // whatever 5 happen to be first in AD/LDAP return order.
+    // don't let a bare "@" with nothing typed yet turn into an empty-string
+    // search - "".includes("") is always true, so it'd match everyone in
+    // allUsersCache and just show whichever 5 happened to come back first
     if (match && match[1].length > 0) {
       const query = match[1].toLowerCase();
       const matchingUsers = allUsersCache.filter((u) => {
@@ -225,9 +156,9 @@ function initAutocomplete() {
         (highlightedSuggestionIndex - 1 + box.children.length) % box.children.length;
       applySuggestionHighlight();
     } else if (e.key === "Enter") {
-      // Without this, Enter would fall through to its default behavior in
-      // the textarea (a newline) instead of confirming the highlighted
-      // suggestion — the two must be mutually exclusive while the box is open.
+      // stop it from adding a newline in the textarea - while the
+      // suggestions box is open Enter should pick the highlighted user, not
+      // both at once
       e.preventDefault();
       if (highlightedSuggestionIndex >= 0) {
         box.children[highlightedSuggestionIndex].click();
@@ -599,10 +530,10 @@ function formatCommentTimestamp(dateInput) {
   return `${month} ${day}, ${year} at ${hours}:${minutes} ${ampm}`;
 }
 
-// Only surfaces a ref code or "PENDING" when the comment actually has (or is
-// waiting to get) a real, known-user mention — a comment whose only "@word"
-// matches no one at all should read as a normal message with no badge, not
-// as something perpetually stuck in a pending state.
+// Works out what badge (if any) a comment should show. Only shows a ref code
+// or "PENDING" if there's an actual real-user mention behind it - if the only
+// "@word" in there doesn't match anyone, it should just look like a normal
+// comment, not something stuck waiting forever.
 function computeRefLabel(content) {
   const refMatch = content.match(/\[ref:([^\]]+)\]/);
   if (refMatch) return refMatch[1];
@@ -622,9 +553,8 @@ function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
 
   const displayPayloadText = comment.content.replace(/\[ref:[^\]]+\]/g, "").trim();
 
-  // Only highlight an "@word" as a mention if it actually resolves to a real,
-  // known user — an "@typo" that matches no one should render as plain text,
-  // not imply the comment is tracking a real (if unresolved) mention.
+  // same idea here - only color an "@word" like a mention if it's an actual
+  // known user, otherwise leave it as plain text
   const inlineHighlightedText = displayPayloadText.replace(
     /@([\w][\w.]*[\w]|[\w])/g,
     (fullMatch, username) =>
@@ -873,11 +803,10 @@ async function scanAllComments() {
   }
 }
 
-// Mirrors the matching logic in resolveUserEmailLocal, but only checks
-// whether the token corresponds to a real, known user at all — this is what
-// keeps a plain "@typo" (no such user) from being treated as an actionable
-// mention at all, rather than surfacing a confusing "no email on file" error
-// for something that was never a real person to begin with.
+// Same matching logic as resolveUserEmailLocal below, just a plain yes/no
+// check for "does this username exist at all". Used so a typo'd @mention
+// doesn't get treated as a real one and throw a confusing "no email on
+// file" error for someone who was never a real user to begin with.
 function isKnownUsername(username) {
   const lowerUser = username.toLowerCase();
   return allUsersCache.some((u) => {
