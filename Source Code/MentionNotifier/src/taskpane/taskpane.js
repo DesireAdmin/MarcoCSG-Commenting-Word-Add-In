@@ -118,7 +118,10 @@ function initAutocomplete() {
 
   input.addEventListener("input", function (e) {
     const text = e.target.value;
-    const match = text.match(/@([\w.]*)$/);
+    // \w alone doesn't cover hyphens or apostrophes, both common in real
+    // login/last names ("svc-DesireAdmin", "O'Brien") - without them here,
+    // typing past either character would just close the suggestion box
+    const match = text.match(/@([\w.'-]*)$/);
 
     // don't let a bare "@" with nothing typed yet turn into an empty-string
     // search - "".includes("") is always true, so it'd match everyone in
@@ -538,7 +541,7 @@ function computeRefLabel(content) {
   const refMatch = content.match(/\[ref:([^\]]+)\]/);
   if (refMatch) return refMatch[1];
 
-  const hasKnownMention = [...content.matchAll(/@([\w][\w.]*[\w]|[\w])/g)].some((m) =>
+  const hasKnownMention = [...content.matchAll(/@([\w][\w.'-]*[\w]|[\w])/g)].some((m) =>
     isKnownUsername(m[1])
   );
   return hasKnownMention ? "PENDING" : null;
@@ -556,7 +559,7 @@ function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
   // same idea here - only color an "@word" like a mention if it's an actual
   // known user, otherwise leave it as plain text
   const inlineHighlightedText = displayPayloadText.replace(
-    /@([\w][\w.]*[\w]|[\w])/g,
+    /@([\w][\w.'-]*[\w]|[\w])/g,
     (fullMatch, username) =>
       isKnownUsername(username)
         ? `<span style="color: #0078d4; font-weight: 600;">@${username}</span>`
@@ -827,7 +830,7 @@ async function processComment(comment, context) {
   if (comment.resolved) return;
 
   const text = comment.content || "";
-  const mentionRegex = /@([\w][\w.]*[\w]|[\w])/g;
+  const mentionRegex = /@([\w][\w.'-]*[\w]|[\w])/g;
   const matches = [...text.matchAll(mentionRegex)];
   const currentMentions = [...new Set(matches.map((m) => m[1]))].filter(isKnownUsername);
 
@@ -888,7 +891,7 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   const cleanDocUrl = buildCleanDocUrl(docUrl);
 
   const commentPreview = originalText
-    .replace(/@[\w.]+/g, "")
+    .replace(/@[\w.'-]+/g, "")
     .replace(/\[ref:[^\]]+\]/g, "")
     .trim()
     .substring(0, 150);
