@@ -77,8 +77,25 @@ function isTrustedSharePointUrl(rawUrl) {
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
     return TRUSTED_SP_HOSTS.includes(parsed.hostname.toLowerCase());
   } catch (err) {
+    logError(`[NTLM] Couldn't parse docUrl "${rawUrl}":`, err.stack || err.message || err);
     return false;
   }
+}
+
+// keeps SharePoint error bodies (which can be a full HTML error page) from
+// flooding the IISNode log - we still want enough of it to see the
+// Correlation ID / actual message, just not several KB of markup per line
+function truncateForLog(value, max = 800) {
+  if (!value) return value;
+  const str = String(value);
+  return str.length > max ? `${str.slice(0, max)}…(truncated)` : str;
+}
+
+// SharePoint stamps every response (including error pages) with this - it's
+// the exact key needed to find the matching entry in ULS logs, so it's worth
+// surfacing on every failed call rather than making someone dig for it later
+function getSPRequestGuid(spRes) {
+  return (spRes && spRes.headers && (spRes.headers["sprequestguid"] || spRes.headers["SPRequestGuid"])) || null;
 }
 
 // Works out which SharePoint site a document's URL actually belongs to by
@@ -115,14 +132,36 @@ async function findSiteUsersForUrl(rawUrl) {
         headers: { Accept: "application/json;odata=verbose" },
       });
     } catch (err) {
-      logError(`[NTLM] Candidate ${candidateUrl} — request failed: ${err.message || err}`);
+      // this is a transport-level failure (DNS, connection refused, NTLM
+      // handshake error) - not SharePoint answering, so there's no
+      // SPRequestGuid/body to log, just whatever Node/httpntlm threw
+      logError(
+        `[NTLM] Candidate ${candidateUrl} — request failed:`,
+        err.stack || err.message || err
+      );
       continue; // couldn't even reach this one, try a shorter path
     }
 
-    logInfo(`[NTLM] Candidate ${candidateUrl} -> HTTP ${spRes.statusCode}`);
+    const spRequestGuid = getSPRequestGuid(spRes);
+    logInfo(
+      `[NTLM] Candidate ${candidateUrl} -> HTTP ${spRes.statusCode}` +
+        (spRequestGuid ? ` (SPRequestGuid: ${spRequestGuid})` : "")
+    );
 
     if (spRes.statusCode === 401 || spRes.statusCode === 403) {
-      const err = new Error(`Access denied by SharePoint (HTTP ${spRes.statusCode}) at ${candidateUrl}`);
+      // log the raw SharePoint response here, before it gets sanitized into
+      // the generic client-facing "no_access" message below - this body
+      // (or the correlation ID inside an HTML error page) is usually the
+      // only way to tell "genuinely no permission" apart from a claims/auth
+      // pipeline failure without going to ULS logs on the server itself
+      logError(
+        `[NTLM] Access denied by SharePoint (HTTP ${spRes.statusCode}) at ${candidateUrl}` +
+          (spRequestGuid ? ` — SPRequestGuid: ${spRequestGuid}` : "") +
+          ` — response body: ${truncateForLog(spRes.body)}`
+      );
+      const err = new Error(
+        `Access denied by SharePoint (HTTP ${spRes.statusCode}) at ${candidateUrl}`
+      );
       err.code = "no_access";
       throw err;
     }
@@ -135,6 +174,7 @@ async function findSiteUsersForUrl(rawUrl) {
     // anything else (404 etc) - not a site, keep trimming and try again
   }
 
+  logError(`[NTLM] No SharePoint site resolved for any prefix of ${rawUrl}`);
   const err = new Error(`No SharePoint site resolved for any prefix of ${rawUrl}`);
   err.code = "not_found";
   throw err;
@@ -177,7 +217,12 @@ function ntlmRequest(method, url, { headers, body } = {}) {
         username: SP_USERNAME,
         password: SP_PASSWORD,
         domain: SP_DOMAIN,
-        headers: headers || {},
+        // Tells SharePoint's claims pipeline this is a direct Windows-auth
+        // client, not a browser waiting for a sign-in redirect. Without this,
+        // zones with more than one claims provider (e.g. Windows + an OIDC/
+        // SAML trusted provider) fail to resolve the NTLM identity at all -
+        // see the "no_access"/garbled-response case this was added for.
+        headers: { "X-FORMS_BASED_AUTH_ACCEPTED": "f", ...(headers || {}) },
         body,
       },
       (err, res) => (err ? reject(err) : resolve(res))
@@ -203,7 +248,8 @@ app.get("/api/siteusers", async (req, res) => {
     logError(`[NTLM] Rejected request — not a trusted SharePoint URL: ${docUrl}`);
     return res.status(400).json({
       error: "not_sharepoint",
-      message: "This document isn't recognized as opened from a SharePoint site — @mentions are unavailable.",
+      message:
+        "This document isn't recognized as opened from a SharePoint site — @mentions are unavailable.",
     });
   }
 
@@ -217,7 +263,8 @@ app.get("/api/siteusers", async (req, res) => {
       logError(`[NTLM] ${error.message}`);
       return res.status(403).json({
         error: "no_access",
-        message: "Please contact your admin to enable @mentions for this document's location.",
+        message:
+          "Please contact your admin — the service account used for @mentions does not have access to this document's location.",
       });
     }
 
@@ -233,7 +280,9 @@ app.get("/api/siteusers", async (req, res) => {
     // message - no point leaking the service account name or raw NTLM
     // errors to whoever's looking at the browser console
     logError("[NTLM] siteusers request failed:", error.stack || error.message || error);
-    return res.status(502).json({ error: "SharePoint request failed — see backend logs for details." });
+    return res
+      .status(502)
+      .json({ error: "SharePoint request failed — see backend logs for details." });
   }
 });
 
@@ -242,7 +291,9 @@ app.post("/api/send-email", async (req, res) => {
   const { to, subject, html } = req.body;
 
   if (!to || !subject || !html) {
-    logError(`[SMTP] Rejected request — missing required field(s) (to="${to}", subject="${subject}")`);
+    logError(
+      `[SMTP] Rejected request — missing required field(s) (to="${to}", subject="${subject}")`
+    );
     return res
       .status(400)
       .json({ error: "Missing required payload parameters (to, subject, html)" });
@@ -260,7 +311,9 @@ app.post("/api/send-email", async (req, res) => {
     return res.status(200).json({ success: true, messageId: info.messageId });
   } catch (error) {
     logError("[SMTP ERROR] Mail delivery failed:", error.stack || error.message || error);
-    return res.status(502).json({ error: "SMTP server rejected transmission — see backend logs for details." });
+    return res
+      .status(502)
+      .json({ error: "SMTP server rejected transmission — see backend logs for details." });
   }
 });
 
@@ -268,7 +321,10 @@ app.post("/api/send-email", async (req, res) => {
 // thrown error we didn't wrap in try/catch, etc) so it ends up in the logs
 // with a real stack trace instead of just a bare IIS 500
 app.use((err, req, res, next) => {
-  logError(`[EXPRESS] Unhandled error on ${req.method} ${req.originalUrl}:`, err.stack || err.message || err);
+  logError(
+    `[EXPRESS] Unhandled error on ${req.method} ${req.originalUrl}:`,
+    err.stack || err.message || err
+  );
   res.status(500).json({ error: "Unexpected server error — see backend logs for details." });
 });
 

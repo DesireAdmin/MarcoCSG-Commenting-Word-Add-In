@@ -1,22 +1,22 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <OfficeApp xmlns="http://schemas.microsoft.com/office/appforoffice/1.1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:bt="http://schemas.microsoft.com/office/officeappbasictypes/1.0" xmlns:ov="http://schemas.microsoft.com/office/taskpaneappversionoverrides" xsi:type="TaskPaneApp">
   <Id>48b4d105-a7e6-4d2a-b5ac-0b82fa6e386b</Id>
-  <Version>1.0.0.2</Version>
+  <Version>1.0.0.3</Version>
   <ProviderName>RegDocs360</ProviderName>
   <DefaultLocale>en-US</DefaultLocale>
   <DisplayName DefaultValue="MentionNotifier"/>
   <Description DefaultValue="MentionNotifier"/>
-  <IconUrl DefaultValue="http://spse01:8088/assets/icon-32.png"/>
-  <HighResolutionIconUrl DefaultValue="http://spse01:8088/assets/icon-64.png"/>
-  <SupportUrl DefaultValue="http://spse01:8088/help"/>
+  <IconUrl DefaultValue="http://mennotifier.regdocs365.com/assets/icon-32.png"/>
+  <HighResolutionIconUrl DefaultValue="http://mennotifier.regdocs365.com/assets/icon-64.png"/>
+  <SupportUrl DefaultValue="http://mennotifier.regdocs365.com/help"/>
   <AppDomains>
-       <AppDomain>http://spse01:8080</AppDomain>
+       <AppDomain>http://subs-tst.regdocs365.com</AppDomain>
   </AppDomains>
   <Hosts>
     <Host Name="Document"/>
   </Hosts>
   <DefaultSettings>
-    <SourceLocation DefaultValue="http://spse01:8088/taskpane.html"/>
+    <SourceLocation DefaultValue="http://mennotifier.regdocs365.com/taskpane.html"/>
   </DefaultSettings>
   <Permissions>ReadWriteDocument</Permissions>
 </OfficeApp>
