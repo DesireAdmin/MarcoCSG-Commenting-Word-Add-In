@@ -95,7 +95,12 @@ function truncateForLog(value, max = 800) {
 // the exact key needed to find the matching entry in ULS logs, so it's worth
 // surfacing on every failed call rather than making someone dig for it later
 function getSPRequestGuid(spRes) {
-  return (spRes && spRes.headers && (spRes.headers["sprequestguid"] || spRes.headers["SPRequestGuid"])) || null;
+  return (
+    (spRes &&
+      spRes.headers &&
+      (spRes.headers["sprequestguid"] || spRes.headers["SPRequestGuid"])) ||
+    null
+  );
 }
 
 // Works out which SharePoint site a document's URL actually belongs to by
@@ -249,7 +254,7 @@ app.get("/api/siteusers", async (req, res) => {
     return res.status(400).json({
       error: "not_sharepoint",
       message:
-        "This document isn't recognized as opened from a SharePoint site — @mentions are unavailable.",
+        "This document isn't recognized as opened from a trusted allowed SharePoint site - @mentions are unavailable.",
     });
   }
 
@@ -264,7 +269,7 @@ app.get("/api/siteusers", async (req, res) => {
       return res.status(403).json({
         error: "no_access",
         message:
-          "Please contact your admin — the service account used for @mentions does not have access to this document's location.",
+          "Please contact your admin - the service account used for MentionNotifier does not have access to this document's location.",
       });
     }
 
@@ -272,7 +277,7 @@ app.get("/api/siteusers", async (req, res) => {
       logError(`[NTLM] ${error.message}`);
       return res.status(404).json({
         error: "not_found",
-        message: "No SharePoint site could be found for this document — @mentions are unavailable.",
+        message: "No SharePoint site could be found for this document - @mentions are unavailable.",
       });
     }
 
@@ -282,7 +287,7 @@ app.get("/api/siteusers", async (req, res) => {
     logError("[NTLM] siteusers request failed:", error.stack || error.message || error);
     return res
       .status(502)
-      .json({ error: "SharePoint request failed — see backend logs for details." });
+      .json({ error: "SharePoint request failed - see backend logs for details." });
   }
 });
 
