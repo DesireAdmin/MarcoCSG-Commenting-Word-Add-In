@@ -86,11 +86,7 @@
       "command": "npm",
       "args": [
         "run",
-        "start",
-        "--",
-        "desktop",
-        "--app",
-        "word"
+        "start:dev"
       ],
       "presentation": {
         "clear": true,
@@ -138,7 +134,7 @@
     {
       "label": "Stop Debug",
       "type": "npm",
-      "script": "stop",
+      "script": "stop:dev",
       "presentation": {
         "clear": true,
         "panel": "shared",

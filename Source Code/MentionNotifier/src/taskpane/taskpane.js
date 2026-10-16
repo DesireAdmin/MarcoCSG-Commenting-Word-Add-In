@@ -20,9 +20,9 @@ let isScanning = false;
 const CONFIG = {
   scanInterval: 8000,
   // Same-origin ("") once deployed under IISNode alongside the add-in files.
-  // For local dev-server testing (webpack serve on :3000) point this at the
-  // relay's own address, e.g. "http://localhost:5000".
-  relayBaseUrl: "",
+  // When the pane is served from the local dev server (https://localhost:3000)
+  // it talks to the locally running backend on :5000 automatically.
+  relayBaseUrl: window.location.hostname === "localhost" ? "http://localhost:5000" : "",
 };
 
 Office.onReady(function (info) {
@@ -121,7 +121,7 @@ function initAutocomplete() {
     // \w alone doesn't cover hyphens or apostrophes, both common in real
     // login/last names ("svc-DesireAdmin", "O'Brien") - without them here,
     // typing past either character would just close the suggestion box
-    const match = text.match(/@([\w.'-]*)$/);
+    const match = text.match(/@([\w.'@-]*)$/);
 
     // don't let a bare "@" with nothing typed yet turn into an empty-string
     // search - "".includes("") is always true, so it'd match everyone in
@@ -541,7 +541,7 @@ function computeRefLabel(content) {
   const refMatch = content.match(/\[ref:([^\]]+)\]/);
   if (refMatch) return refMatch[1];
 
-  const hasKnownMention = [...content.matchAll(/@([\w][\w.'-]*[\w]|[\w])/g)].some((m) =>
+  const hasKnownMention = [...content.matchAll(/@([\w][\w.'@-]*[\w]|[\w])/g)].some((m) =>
     isKnownUsername(m[1])
   );
   return hasKnownMention ? "PENDING" : null;
@@ -559,7 +559,7 @@ function buildCommentNodeHTML(comment, isReplyNode, parentRef) {
   // same idea here - only color an "@word" like a mention if it's an actual
   // known user, otherwise leave it as plain text
   const inlineHighlightedText = displayPayloadText.replace(
-    /@([\w][\w.'-]*[\w]|[\w])/g,
+    /@([\w][\w.'@-]*[\w]|[\w])/g,
     (fullMatch, username) =>
       isKnownUsername(username)
         ? `<span style="color: #0078d4; font-weight: 600;">@${username}</span>`
@@ -821,8 +821,9 @@ function isKnownUsername(username) {
 
     const cleanLogin = extractUsernameFromLogin(loginName).toLowerCase();
     const cleanTitle = extractUsernameFromLogin(title).toLowerCase();
+    const email = props.Email && props.Email.__text ? props.Email.__text.toLowerCase() : "";
 
-    return cleanLogin === lowerUser || cleanTitle === lowerUser;
+    return cleanLogin === lowerUser || cleanTitle === lowerUser || email === lowerUser;
   });
 }
 
@@ -830,9 +831,17 @@ async function processComment(comment, context) {
   if (comment.resolved) return;
 
   const text = comment.content || "";
-  const mentionRegex = /@([\w][\w.'-]*[\w]|[\w])/g;
+  const mentionRegex = /@([\w][\w.'@-]*[\w]|[\w])/g;
   const matches = [...text.matchAll(mentionRegex)];
-  const currentMentions = [...new Set(matches.map((m) => m[1]))].filter(isKnownUsername);
+  const rawMentions = [...new Set(matches.map((m) => m[1]))];
+  const currentMentions = rawMentions.filter(isKnownUsername);
+
+  if (rawMentions.length > 0) {
+    console.log(
+      `[MentionNotifier] comment ${comment.id}: mentions=${JSON.stringify(rawMentions)} ` +
+        `known=${JSON.stringify(currentMentions)} (user cache size: ${allUsersCache.length})`
+    );
+  }
 
   if (currentMentions.length === 0) return;
 
@@ -891,7 +900,7 @@ async function sendNotificationSandbox(username, anchor, originalText, authorNam
   const cleanDocUrl = buildCleanDocUrl(docUrl);
 
   const commentPreview = originalText
-    .replace(/@[\w.'-]+/g, "")
+    .replace(/@[\w.'@-]+/g, "")
     .replace(/\[ref:[^\]]+\]/g, "")
     .trim()
     .substring(0, 150);
@@ -966,8 +975,9 @@ async function resolveUserEmailLocal(username) {
 
     const cleanLogin = extractUsernameFromLogin(loginName).toLowerCase();
     const cleanTitle = extractUsernameFromLogin(title).toLowerCase();
+    const mail = props.Email && props.Email.__text ? props.Email.__text.toLowerCase() : "";
 
-    return cleanLogin === lowerUser || cleanTitle === lowerUser;
+    return cleanLogin === lowerUser || cleanTitle === lowerUser || mail === lowerUser;
   });
 
   // SharePoint can carry more than one user record for the same person (e.g.

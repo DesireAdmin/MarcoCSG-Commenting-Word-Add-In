@@ -63,7 +63,7 @@ module.exports = async (env, options) => {
             to: "assets/[name][ext][query]",
           },
           {
-            from: "manifest*.xml",
+            from: "manifest.xml", // not manifest.dev.xml - that one must never reach dist/
             to: "[name]" + "[ext]",
             transform(content) {
               if (dev) {
